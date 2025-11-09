@@ -1,0 +1,68 @@
+# SearXNG Settings for Production Deployment
+
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: "SearXNG Search API"
+  privacypolicy_url: false
+  donation_url: false
+  contact_url: false
+  enable_metrics: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "changeme_secretkey_for_production"
+  limiter: false
+  image_proxy: true
+  method: "GET"
+  
+  # Bind to localhost only
+  bind_address: "127.0.0.1:8888"
+  
+  # Allow access from FastAPI
+  public_instance: false
+
+ui:
+  static_use_hash: true
+  default_locale: "en"
+  query_in_title: false
+  infinite_scroll: false
+  default_theme: simple
+  center_alignment: false
+  results_on_new_tab: false
+  advanced_search: true
+
+# Enable popular engines
+engines:
+  - name: brave
+    disabled: false
+  - name: duckduckgo
+    disabled: false
+  - name: google
+    disabled: false
+  - name: bing
+    disabled: false
+  - name: wikipedia
+    disabled: false
+  - name: wikidata
+    disabled: false
+
+enabled_plugins:
+  - 'Hash plugin'
+  - 'Self Information'
+  - 'Tracker URL remover'
+  - 'Open Access DOI rewrite'
+
+outgoing:
+  request_timeout: 10.0
+  max_request_timeout: 15.0
+  useragent_suffix: ""
+  enable_http2: true

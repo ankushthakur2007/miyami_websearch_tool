@@ -1,0 +1,42 @@
+# Ignore files for Docker build
+.DS_Store
+.git
+.gitignore
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.log
+.env
+.venv
+venv/
+ENV/
+
+# Fly.io
+.fly/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test files
+test_*.py
+*_test.py
+
+# Documentation
+README.md
+*.md
+
+# SearXNG data (will be cloned in Docker)
+searxng/.git/
+searxng/node_modules/
+searxng/.npm/
+searxng/.nvm/
