@@ -1,4 +1,4 @@
-# SearXNG Settings - Minimal configuration using defaults
+# SearXNG settings
 
 use_default_settings: true
 
@@ -8,7 +8,6 @@ general:
 
 search:
   safe_search: 0
-  autocomplete: ""
   formats:
     - html
     - json
