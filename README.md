@@ -8,8 +8,8 @@ A production-ready FastAPI wrapper for SearXNG that provides LLM-friendly search
 - **📄 Content Extraction**: Fetch and clean webpage content
 - **⚡ Fast & Async**: Built with FastAPI and async/await
 - **🐳 Docker Ready**: One-command deployment
-- **☁️ Cloud Deploy**: Pre-configured for Fly.io
-- **🆓 Free Hosting**: Runs on Fly.io free tier
+- **☁️ Cloud Deploy**: Pre-configured for Render
+- **🆓 Free Hosting**: Runs on Render free tier (750 hours/month)
 - **🤖 LLM Optimized**: Clean JSON responses perfect for LLM consumption
 
 ## 📁 Project Structure
@@ -35,7 +35,7 @@ Search the web using multiple engines and get structured results.
 
 **Example:**
 ```bash
-curl "https://your-app.fly.dev/search-api?query=weather&categories=general"
+curl "https://your-app.onrender.com/search-api?query=weather&categories=general"
 ```
 
 **Response:**
@@ -62,7 +62,7 @@ Extract clean, readable content from any webpage.
 
 **Example:**
 ```bash
-curl "https://your-app.fly.dev/fetch?url=https://example.com"
+curl "https://your-app.onrender.com/fetch?url=https://example.com"
 ```
 
 **Response:**
@@ -82,41 +82,31 @@ curl "https://your-app.fly.dev/fetch?url=https://example.com"
 
 ### 3. `/health` - Health Check
 ```bash
-curl https://your-app.fly.dev/health
+curl https://your-app.onrender.com/health
 ```
 
 ### 4. `/docs` - Interactive API Documentation
-Visit `https://your-app.fly.dev/docs` for Swagger UI
+Visit `https://your-app.onrender.com/docs` for Swagger UI
 
-## 🚢 Quick Deploy to Fly.io
+## 🚢 Quick Deploy to Render
 
-### 1. Install Fly.io CLI
-```bash
-# macOS
-brew install flyctl
-
-# Linux
-curl -L https://fly.io/install.sh | sh
-```
-
-### 2. Login/Signup
-```bash
-flyctl auth signup
-# or
-flyctl auth login
-```
-
-### 3. Deploy
+### 1. Push to GitHub
 ```bash
 cd miyami_search_api
-flyctl launch
-# Follow prompts, then:
-flyctl deploy
+git add .
+git commit -m "Deploy to Render"
+git push origin main
 ```
 
-Your API will be live at `https://your-app-name.fly.dev` 🎉
+### 2. Deploy on Render
+1. Go to [render.com](https://render.com) and sign in with GitHub
+2. Click **New +** → **Web Service**
+3. Select your repository
+4. Render auto-detects Docker and deploys!
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed instructions.
+Your API will be live at `https://your-app.onrender.com` in 5 minutes! 🎉
+
+See [RENDER_DEPLOYMENT.md](RENDER_DEPLOYMENT.md) for detailed instructions.
 
 ## 💻 Local Development
 
@@ -219,15 +209,10 @@ Edit `searxng_settings.yml` to configure:
 
 ## 📈 Monitoring
 
-View logs on Fly.io:
-```bash
-flyctl logs
-```
-
-View metrics:
-```bash
-flyctl dashboard
-```
+View logs and metrics on Render Dashboard:
+- Real-time logs with search & filtering
+- CPU, Memory, and Request metrics
+- Deployment history and events
 
 ## 🔒 Security Notes
 
@@ -236,30 +221,34 @@ flyctl dashboard
 - No data is logged or stored
 - Privacy-focused search (via SearXNG)
 
-## 🆓 Free Tier Limits
+## 🆓 Free Tier Details
 
-Fly.io free tier:
-- 3 shared VMs (256MB RAM each)
-- 160GB outbound transfer/month
-- Auto-sleep when idle
-- Auto-wake on request
+Render free tier:
+- 750 hours/month (enough for 24/7)
+- 512 MB RAM
+- 100 GB bandwidth/month
+- Auto HTTPS (free SSL)
+- Spins down after 15 min inactivity
+- 30-60s cold start time
 
-This is perfect for LLM search tools with moderate usage.
+Perfect for LLM search tools with moderate usage!
 
 ## 🛟 Troubleshooting
 
 **App not responding?**
-- Check logs: `flyctl logs`
-- Restart: `flyctl apps restart`
+- Check logs in Render Dashboard → Logs tab
+- Check if service spun down (free tier)
 
 **Out of memory?**
-- Scale up: `flyctl scale vm shared-cpu-1x --memory 1024`
+- Upgrade to Starter plan ($7/month) for more RAM
+- Or optimize Docker image
 
 **Slow first request?**
-- Normal - app wakes from sleep
-- Takes 10-20 seconds
+- Normal on free tier - app wakes from sleep
+- Takes 30-60 seconds (SearXNG initialization)
+- Use uptime monitor to keep it active
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for more troubleshooting.
+See [RENDER_DEPLOYMENT.md](RENDER_DEPLOYMENT.md) for detailed troubleshooting.
 
 ## 📝 License
 
@@ -278,7 +267,7 @@ Feel free to:
 
 - [SearXNG Documentation](https://docs.searxng.org/)
 - [FastAPI Documentation](https://fastapi.tiangolo.com/)
-- [Fly.io Documentation](https://fly.io/docs/)
+- [Render Documentation](https://render.com/docs)
 
 ## 🎯 Use Cases
 

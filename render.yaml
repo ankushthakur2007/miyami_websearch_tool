@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: searxng-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: oregon
+    healthCheckPath: /health
+    envVars:
+      - key: SEARXNG_DEBUG
+        value: 0
+      - key: SEARXNG_BIND_ADDRESS
+        value: 127.0.0.1:8888
+      - key: PORT
+        value: 8080
+      - key: SEARXNG_SECRET
+        generateValue: true
