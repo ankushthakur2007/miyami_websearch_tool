@@ -23,10 +23,15 @@ search:
   default_lang: "en"
   ban_time_on_fail: 5
   max_ban_time_on_fail: 120
-  default_doi_resolver: "oadoi.org"
   formats:
     - html
     - json
+
+doi_resolvers:
+  oadoi.org: 'https://oadoi.org/'
+  doi.org: 'https://doi.org/'
+
+default_doi_resolver: 'oadoi.org'
 
 server:
   port: 8888
