@@ -23,3 +23,12 @@ server:
   secret_key: "changeme_secretkey_for_production"
   limiter: false
   image_proxy: true
+
+doi_resolvers:
+  oadoi.org: 'https://oadoi.org/'
+  doi.org: 'https://doi.org/'
+  sci-hub.se: 'https://sci-hub.se/'
+  sci-hub.st: 'https://sci-hub.st/'
+  sci-hub.ru: 'https://sci-hub.ru/'
+
+default_doi_resolver: 'oadoi.org'
