@@ -135,11 +135,185 @@ python main.py
 
 Access FastAPI at: `http://localhost:8001`
 
-## 🤖 LLM Integration
+## 🤖 How to Use with AI
 
-### Example with OpenAI Function Calling
+### 🔗 Your Live API URL
+Replace `your-app-name` with your actual Render app name:
+```
+https://miyami-websearch-tool.onrender.com
+```
+
+### 🛠️ Two Main Tools for AI Agents
+
+#### **Tool 1: Web Search** (`/search-api`)
+Search the internet and get relevant results.
+
+**When to use:** When AI needs current information, facts, news, or general web search.
+
+**MCP Tool Definition:**
+```json
+{
+  "name": "web_search",
+  "description": "Search the web using multiple search engines (DuckDuckGo, Google, Bing, Brave, Wikipedia). Returns current information from the internet.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "The search query"
+      },
+      "categories": {
+        "type": "string",
+        "description": "Search categories: general, news, images, videos (default: general)"
+      }
+    },
+    "required": ["query"]
+  }
+}
+```
+
+**Example Usage:**
+```bash
+# Search for current information
+curl "https://miyami-websearch-tool.onrender.com/search-api?query=latest+AI+news"
+
+# Search with specific category
+curl "https://miyami-websearch-tool.onrender.com/search-api?query=python+tutorials&categories=general"
+```
+
+**Python Implementation:**
+```python
+import httpx
+
+async def web_search(query: str, categories: str = "general"):
+    """Search the web for current information"""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(
+            "https://miyami-websearch-tool.onrender.com/search-api",
+            params={"query": query, "categories": categories}
+        )
+        return response.json()
+
+# Usage
+results = await web_search("weather in Tokyo")
+print(f"Found {results['number_of_results']} results")
+for result in results['results'][:5]:
+    print(f"- {result['title']}: {result['url']}")
+```
+
+---
+
+#### **Tool 2: Fetch & Extract Content** (`/fetch`)
+Fetch any webpage and extract clean, readable content.
+
+**When to use:** When AI needs to read full articles, documentation, or webpage content.
+
+**MCP Tool Definition:**
+```json
+{
+  "name": "fetch_webpage",
+  "description": "Fetch and extract clean content from any webpage. Returns the main article text, headings, links, and images without ads or navigation clutter.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "The URL to fetch and extract content from"
+      },
+      "include_links": {
+        "type": "boolean",
+        "description": "Include extracted links (default: true)"
+      }
+    },
+    "required": ["url"]
+  }
+}
+```
+
+**Example Usage:**
+```bash
+# Fetch and clean webpage content
+curl "https://miyami-websearch-tool.onrender.com/fetch?url=https://example.com/article"
+
+# Fetch with links
+curl "https://miyami-websearch-tool.onrender.com/fetch?url=https://example.com&include_links=true"
+```
+
+**Python Implementation:**
+```python
+import httpx
+
+async def fetch_webpage(url: str, include_links: bool = True):
+    """Fetch and extract clean content from a webpage"""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(
+            "https://miyami-websearch-tool.onrender.com/fetch",
+            params={"url": url, "include_links": include_links}
+        )
+        return response.json()
+
+# Usage
+content = await fetch_webpage("https://example.com/article")
+print(f"Title: {content['metadata']['title']}")
+print(f"Content: {content['content'][:500]}...")
+```
+
+---
+
+### 🎯 Complete AI Workflow Example
 
 ```python
+import httpx
+
+async def ai_research_assistant(topic: str):
+    """
+    AI research workflow:
+    1. Search for topic
+    2. Fetch top results
+    3. Extract and summarize content
+    """
+    base_url = "https://miyami-websearch-tool.onrender.com"
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        # Step 1: Search the web
+        search_response = await client.get(
+            f"{base_url}/search-api",
+            params={"query": topic, "categories": "general"}
+        )
+        search_data = search_response.json()
+        
+        print(f"Found {search_data['number_of_results']} results for '{topic}'")
+        
+        # Step 2: Fetch content from top 3 results
+        articles = []
+        for result in search_data['results'][:3]:
+            try:
+                fetch_response = await client.get(
+                    f"{base_url}/fetch",
+                    params={"url": result['url'], "include_links": False}
+                )
+                article = fetch_response.json()
+                articles.append({
+                    "title": article['metadata']['title'],
+                    "url": result['url'],
+                    "content": article['content'][:1000]  # First 1000 chars
+                })
+            except:
+                continue
+        
+        return {
+            "search_results": search_data['results'][:5],
+            "detailed_articles": articles
+        }
+
+# Usage
+research = await ai_research_assistant("quantum computing breakthroughs")
+```
+
+### 🤖 Example with OpenAI Function Calling
+
+```python
+import openai
 import httpx
 
 tools = [
@@ -147,7 +321,7 @@ tools = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Search the web using multiple search engines",
+            "description": "Search the web for current information using multiple search engines",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -156,15 +330,30 @@ tools = [
                 "required": ["query"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_webpage",
+            "description": "Fetch and extract clean content from a webpage",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL to fetch"}
+                },
+                "required": ["url"]
+            }
+        }
     }
 ]
 
-async def web_search(query: str):
+async def execute_function(name: str, arguments: dict):
+    base_url = "https://miyami-websearch-tool.onrender.com"
     async with httpx.AsyncClient() as client:
-        response = await client.get(
-            "https://your-app.fly.dev/search-api",
-            params={"query": query}
-        )
+        if name == "web_search":
+            response = await client.get(f"{base_url}/search-api", params=arguments)
+        elif name == "fetch_webpage":
+            response = await client.get(f"{base_url}/fetch", params=arguments)
         return response.json()
 ```
 
