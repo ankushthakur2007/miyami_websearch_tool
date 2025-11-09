@@ -207,6 +207,7 @@ async def fetch_url(
         raise HTTPException(status_code=500, detail=f"Error processing content: {str(e)}")
 
 @app.get("/health")
+@app.head("/health")
 async def health_check():
     """Check if SearXNG is accessible"""
     try:
@@ -221,6 +222,11 @@ async def health_check():
         "searxng": searxng_status,
         "searxng_url": SEARXNG_URL
     }
+
+@app.head("/")
+async def root_head():
+    """Handle HEAD requests for health checks"""
+    return {}
 
 if __name__ == "__main__":
     import uvicorn
