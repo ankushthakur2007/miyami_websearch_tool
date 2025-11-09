@@ -11,7 +11,9 @@ services:
       - key: SEARXNG_DEBUG
         value: 0
       - key: SEARXNG_BIND_ADDRESS
-        value: 127.0.0.1:8888
+        value: 127.0.0.1
+      - key: SEARXNG_PORT
+        value: 8888
       - key: PORT
         value: 10000
       - key: SEARXNG_SECRET
