@@ -32,3 +32,33 @@ doi_resolvers:
   sci-hub.ru: 'https://sci-hub.ru/'
 
 default_doi_resolver: 'oadoi.org'
+
+engines:
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+
+  - name: google
+    engine: google
+    shortcut: go
+
+  - name: bing
+    engine: bing
+    shortcut: bi
+
+  - name: brave
+    engine: brave
+    shortcut: br
+    categories: [general, web]
+    brave_category: search
+
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    categories: [general]
+
+  - name: startpage
+    engine: startpage
+    shortcut: sp
+    startpage_categ: web
+    categories: [general, web]
