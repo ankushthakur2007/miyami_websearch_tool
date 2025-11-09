@@ -41,9 +41,9 @@ COPY searxng_settings.yml /app/searxng/searx/settings.yml
 EXPOSE 8080
 
 # Set environment variables
-ENV SEARXNG_SECRET="$(openssl rand -hex 32)" \
-    SEARXNG_DEBUG=0 \
-    SEARXNG_BIND_ADDRESS="127.0.0.1:8888" \
+ENV SEARXNG_DEBUG=0 \
+    SEARXNG_BIND_ADDRESS="127.0.0.1" \
+    SEARXNG_PORT=8888 \
     PORT=8080
 
 # Health check
