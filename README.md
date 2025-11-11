@@ -6,6 +6,7 @@ A production-ready FastAPI wrapper for SearXNG that provides LLM-friendly search
 
 - **🔍 Web Search API**: Search using multiple search engines via SearXNG
 - **📄 Content Extraction**: Fetch and clean webpage content
+- **🎯 Search & Fetch**: Automatically search and fetch full content from top N results
 - **⚡ Fast & Async**: Built with FastAPI and async/await
 - **🐳 Docker Ready**: One-command deployment
 - **☁️ Cloud Deploy**: Pre-configured for Render
@@ -80,12 +81,65 @@ curl "https://your-app.onrender.com/fetch?url=https://example.com"
 }
 ```
 
-### 3. `/health` - Health Check
+### 3. `/search-and-fetch` - Search & Auto-Fetch Content ⭐ NEW
+**The most powerful endpoint!** Searches and automatically fetches full content from top results.
+
+**Example:**
+```bash
+curl "https://your-app.onrender.com/search-and-fetch?query=python+tutorials&num_results=3"
+```
+
+**What it does:**
+- ✅ Searches for your query
+- ✅ Gets top N results (default: 3, max: 5)
+- ✅ Automatically fetches full content from each URL (parallel)
+- ✅ Returns both search snippets AND full webpage content
+- ✅ Handles errors gracefully if a page can't be fetched
+
+**Response:**
+```json
+{
+  "query": "python tutorials",
+  "num_results_requested": 3,
+  "num_results_found": 3,
+  "successful_fetches": 2,
+  "failed_fetches": 1,
+  "results": [
+    {
+      "search_result": {
+        "title": "Python Tutorial - W3Schools",
+        "url": "https://example.com",
+        "snippet": "Learn Python...",
+        "engine": "google"
+      },
+      "fetch_status": "success",
+      "fetched_content": {
+        "title": "Python Tutorial",
+        "content": "Full clean article text here...",
+        "headings": [
+          {"level": "h1", "text": "Introduction to Python"}
+        ],
+        "content_length": 12500
+      }
+    }
+  ],
+  "suggestions": ["python tutorial for beginners"]
+}
+```
+
+**Parameters:**
+- `query` (required) - Search query
+- `num_results` (optional) - Number of results to fetch (1-5, default: 3)
+- `categories` (optional) - Search categories (default: general)
+- `language` (optional) - Language code (default: en)
+- `max_content_length` (optional) - Max content per page (default: 50000)
+
+### 4. `/health` - Health Check
 ```bash
 curl https://your-app.onrender.com/health
 ```
 
-### 4. `/docs` - Interactive API Documentation
+### 5. `/docs` - Interactive API Documentation
 Visit `https://your-app.onrender.com/docs` for Swagger UI
 
 ## 🚢 Quick Deploy to Render
@@ -143,7 +197,7 @@ Replace `your-app-name` with your actual Render app name:
 https://miyami-websearch-tool.onrender.com
 ```
 
-### 🛠️ Two Main Tools for AI Agents
+### 🛠️ Three Main Tools for AI Agents
 
 #### **Tool 1: Web Search** (`/search-api`)
 Search the internet and get relevant results.
@@ -256,6 +310,71 @@ async def fetch_webpage(url: str, include_links: bool = True):
 content = await fetch_webpage("https://example.com/article")
 print(f"Title: {content['metadata']['title']}")
 print(f"Content: {content['content'][:500]}...")
+```
+
+---
+
+#### **Tool 3: Search & Auto-Fetch** (`/search-and-fetch`) ⭐ **RECOMMENDED**
+Search and automatically fetch full content from top N results in one request.
+
+**When to use:** When AI needs comprehensive research - combines search + fetch for maximum efficiency.
+
+**MCP Tool Definition:**
+```json
+{
+  "name": "search_and_fetch",
+  "description": "Search the web and automatically fetch full content from top N results. Perfect for research tasks - gets both search snippets and full article content in one request.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "The search query"
+      },
+      "num_results": {
+        "type": "integer",
+        "description": "Number of results to fetch full content from (1-5, default: 3)"
+      },
+      "categories": {
+        "type": "string",
+        "description": "Search categories: general, news, images, videos (default: general)"
+      }
+    },
+    "required": ["query"]
+  }
+}
+```
+
+**Example Usage:**
+```bash
+# Search and fetch top 3 results
+curl "https://miyami-websearch-tool.onrender.com/search-and-fetch?query=python+tutorials&num_results=3"
+
+# Research task with news category
+curl "https://miyami-websearch-tool.onrender.com/search-and-fetch?query=AI+breakthroughs&categories=news&num_results=5"
+```
+
+**Python Implementation:**
+```python
+import httpx
+
+async def search_and_fetch(query: str, num_results: int = 3, categories: str = "general"):
+    """Search and fetch full content from top results"""
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.get(
+            "https://miyami-websearch-tool.onrender.com/search-and-fetch",
+            params={"query": query, "num_results": num_results, "categories": categories}
+        )
+        return response.json()
+
+# Usage
+results = await search_and_fetch("quantum computing", num_results=3)
+print(f"Found {results['num_results_found']} results")
+print(f"Successfully fetched: {results['successful_fetches']}")
+for item in results['results']:
+    if item['fetch_status'] == 'success':
+        print(f"\n{item['search_result']['title']}")
+        print(f"Content: {item['fetched_content']['content'][:500]}...")
 ```
 
 ---

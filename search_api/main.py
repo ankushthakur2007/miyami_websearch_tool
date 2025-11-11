@@ -21,7 +21,8 @@ async def root():
         "message": "SearXNG Search API",
         "endpoints": {
             "/search-api": "Search using SearXNG engines",
-            "/fetch": "Fetch and clean website content"
+            "/fetch": "Fetch and clean website content",
+            "/search-and-fetch": "Search and auto-fetch content from top N results"
         }
     }
 
@@ -205,6 +206,159 @@ async def fetch_url(
         raise HTTPException(status_code=503, detail=f"Cannot connect to URL: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing content: {str(e)}")
+
+@app.get("/search-and-fetch")
+async def search_and_fetch(
+    query: str = Query(..., description="Search query"),
+    num_results: int = Query(3, description="Number of results to fetch (1-5)", ge=1, le=5),
+    categories: Optional[str] = Query("general", description="Search categories"),
+    language: Optional[str] = Query("en", description="Search language"),
+    max_content_length: int = Query(50000, description="Maximum content length per page")
+):
+    """
+    Search and automatically fetch full content from top N results
+    
+    This is a convenience endpoint that:
+    1. Searches for your query
+    2. Gets top N results (default: 3, max: 5)
+    3. Fetches full webpage content for each result
+    4. Returns both search snippets AND full content
+    
+    Example: /search-and-fetch?query=python+tutorials&num_results=3
+    """
+    try:
+        # Step 1: Perform search
+        search_params = {
+            "q": query,
+            "format": "json",
+            "language": language,
+            "pageno": 1
+        }
+        
+        if categories:
+            search_params["categories"] = categories
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            search_response = await client.get(f"{SEARXNG_URL}/search", params=search_params)
+            search_response.raise_for_status()
+            search_data = search_response.json()
+        
+        # Get top N results
+        top_results = search_data.get("results", [])[:num_results]
+        
+        if not top_results:
+            return JSONResponse(content={
+                "query": query,
+                "num_results_found": 0,
+                "results": [],
+                "message": "No search results found"
+            })
+        
+        # Step 2: Fetch content from each URL in parallel
+        async def fetch_single_url(result: dict) -> dict:
+            """Fetch content for a single search result"""
+            url = result.get("url", "")
+            
+            # Validate URL
+            parsed = urlparse(url)
+            if not parsed.scheme or not parsed.netloc:
+                return {
+                    "search_result": result,
+                    "fetch_status": "error",
+                    "fetch_error": "Invalid URL format",
+                    "content": None
+                }
+            
+            try:
+                async with httpx.AsyncClient(
+                    timeout=30.0,
+                    follow_redirects=True,
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; SearXNG-API-Bot/1.0)"}
+                ) as client:
+                    response = await client.get(url)
+                    response.raise_for_status()
+                    
+                    html_content = response.text
+                    doc = Document(html_content)
+                    article_html = doc.summary()
+                    article_soup = BeautifulSoup(article_html, 'lxml')
+                    main_text = article_soup.get_text(separator="\n", strip=True)
+                    
+                    # Limit content length
+                    if len(main_text) > max_content_length:
+                        main_text = main_text[:max_content_length] + "... (truncated)"
+                    
+                    # Extract headings
+                    headings = []
+                    for heading in article_soup.find_all(['h1', 'h2', 'h3']):
+                        headings.append({
+                            "level": heading.name,
+                            "text": heading.get_text(strip=True)
+                        })
+                    
+                    return {
+                        "search_result": {
+                            "title": result.get("title", ""),
+                            "url": url,
+                            "snippet": result.get("content", ""),
+                            "engine": result.get("engine", ""),
+                            "score": result.get("score", 0)
+                        },
+                        "fetch_status": "success",
+                        "fetched_content": {
+                            "title": doc.title(),
+                            "content": main_text,
+                            "headings": headings[:10],  # Limit to 10 headings
+                            "content_length": len(main_text)
+                        }
+                    }
+                    
+            except httpx.HTTPStatusError as e:
+                return {
+                    "search_result": result,
+                    "fetch_status": "error",
+                    "fetch_error": f"HTTP {e.response.status_code}: {str(e)}",
+                    "content": None
+                }
+            except httpx.RequestError as e:
+                return {
+                    "search_result": result,
+                    "fetch_status": "error",
+                    "fetch_error": f"Connection error: {str(e)}",
+                    "content": None
+                }
+            except Exception as e:
+                return {
+                    "search_result": result,
+                    "fetch_status": "error",
+                    "fetch_error": f"Processing error: {str(e)}",
+                    "content": None
+                }
+        
+        # Fetch all URLs in parallel
+        fetch_tasks = [fetch_single_url(result) for result in top_results]
+        fetched_results = await asyncio.gather(*fetch_tasks)
+        
+        # Count successes and failures
+        successful_fetches = sum(1 for r in fetched_results if r["fetch_status"] == "success")
+        failed_fetches = sum(1 for r in fetched_results if r["fetch_status"] == "error")
+        
+        return JSONResponse(content={
+            "query": query,
+            "num_results_requested": num_results,
+            "num_results_found": len(top_results),
+            "successful_fetches": successful_fetches,
+            "failed_fetches": failed_fetches,
+            "results": fetched_results,
+            "suggestions": search_data.get("suggestions", [])
+        })
+        
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=f"Search failed: {str(e)}")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"Cannot connect to SearXNG: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
 @app.get("/health")
 @app.head("/health")
