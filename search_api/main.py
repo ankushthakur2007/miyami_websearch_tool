@@ -6,6 +6,10 @@ from readability import Document
 from typing import Optional, List, Dict, Any
 import asyncio
 from urllib.parse import urljoin, urlparse
+import trafilatura
+import html2text
+from dateutil import parser as date_parser
+import re
 
 app = FastAPI(
     title="SearXNG Search API",
@@ -100,14 +104,25 @@ async def search_api(
 @app.get("/fetch")
 async def fetch_url(
     url: str = Query(..., description="URL to fetch and clean"),
-    include_html: bool = Query(False, description="Include raw HTML"),
+    format: str = Query("text", description="Output format: text, markdown, or html"),
     include_links: bool = Query(True, description="Include extracted links"),
-    max_content_length: int = Query(50000, description="Maximum content length")
+    include_images: bool = Query(True, description="Include extracted images"),
+    max_content_length: int = Query(100000, description="Maximum content length"),
+    extraction_mode: str = Query("trafilatura", description="Extraction engine: trafilatura (best) or readability (fast)")
 ):
     """
-    Fetch a URL and return cleaned, structured content
+    Fetch a URL and return cleaned, structured content (Firecrawl-like quality)
     
-    Example: /fetch?url=https://example.com
+    Supports multiple extraction engines:
+    - trafilatura: Better accuracy, extracts metadata, dates, authors
+    - readability: Faster, good for simple articles
+    
+    Output formats:
+    - text: Clean plain text
+    - markdown: Structured markdown (Firecrawl-like)
+    - html: Clean HTML
+    
+    Example: /fetch?url=https://example.com&format=markdown
     """
     try:
         # Validate URL
@@ -119,84 +134,208 @@ async def fetch_url(
             timeout=30.0,
             follow_redirects=True,
             headers={
-                "User-Agent": "Mozilla/5.0 (compatible; SearXNG-API-Bot/1.0)"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+                "DNT": "1",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1"
             }
         ) as client:
             response = await client.get(url)
             response.raise_for_status()
             
             html_content = response.text
+            final_url = str(response.url)
             
-            # Use readability to extract main content
-            doc = Document(html_content)
-            
-            # Parse with BeautifulSoup for additional extraction
-            soup = BeautifulSoup(html_content, 'lxml')
-            
-            # Extract metadata
-            metadata = {
-                "title": doc.title(),
-                "url": str(response.url),
-                "status_code": response.status_code,
-                "content_type": response.headers.get("content-type", ""),
-            }
-            
-            # Extract meta tags
-            meta_description = soup.find("meta", attrs={"name": "description"})
-            if meta_description:
-                metadata["description"] = meta_description.get("content", "")
-            
-            # Extract main content using readability
-            article_html = doc.summary()
-            article_soup = BeautifulSoup(article_html, 'lxml')
-            
-            # Get clean text
-            main_text = article_soup.get_text(separator="\n", strip=True)
-            
-            # Limit content length
-            if len(main_text) > max_content_length:
-                main_text = main_text[:max_content_length] + "..."
-            
+            # Initialize result structure
             result = {
-                "metadata": metadata,
-                "content": main_text,
-                "short_title": doc.short_title(),
+                "success": True,
+                "url": final_url,
+                "status_code": response.status_code,
             }
             
-            # Extract links if requested
-            if include_links:
-                links = []
-                for link in article_soup.find_all('a', href=True):
-                    href = link['href']
-                    absolute_url = urljoin(url, href)
-                    links.append({
-                        "text": link.get_text(strip=True),
-                        "url": absolute_url
-                    })
-                result["links"] = links[:50]  # Limit to 50 links
+            # Use trafilatura for better extraction (Firecrawl-like)
+            if extraction_mode == "trafilatura":
+                # Extract with trafilatura (best quality)
+                extracted = trafilatura.extract(
+                    html_content,
+                    include_comments=False,
+                    include_tables=True,
+                    include_images=include_images,
+                    include_links=include_links,
+                    output_format='json',
+                    url=final_url,
+                    with_metadata=True
+                )
+                
+                if extracted:
+                    import json
+                    data = json.loads(extracted)
+                    
+                    # Build comprehensive metadata
+                    metadata = {
+                        "title": data.get("title", ""),
+                        "author": data.get("author", ""),
+                        "sitename": data.get("sitename", ""),
+                        "date": data.get("date", ""),
+                        "categories": data.get("categories", []),
+                        "tags": data.get("tags", []),
+                        "description": data.get("description", ""),
+                        "language": data.get("language", ""),
+                        "url": final_url,
+                        "content_type": response.headers.get("content-type", "")
+                    }
+                    
+                    # Clean empty values
+                    metadata = {k: v for k, v in metadata.items() if v}
+                    result["metadata"] = metadata
+                    
+                    # Get main text
+                    main_text = data.get("text", "")
+                    
+                    # Format output based on requested format
+                    if format == "markdown":
+                        # Convert to markdown
+                        h = html2text.HTML2Text()
+                        h.ignore_links = not include_links
+                        h.ignore_images = not include_images
+                        h.body_width = 0  # No wrapping
+                        
+                        # Get raw text or try to extract markdown
+                        raw_html = data.get("raw_text", main_text)
+                        if data.get("fingerprint"):
+                            # Use trafilatura's markdown output
+                            markdown_content = trafilatura.extract(
+                                html_content,
+                                include_comments=False,
+                                include_tables=True,
+                                include_images=include_images,
+                                include_links=include_links,
+                                output_format='markdown',
+                                url=final_url
+                            )
+                            result["content"] = markdown_content or main_text
+                        else:
+                            result["content"] = main_text
+                            
+                    elif format == "html":
+                        # Return clean HTML
+                        result["content"] = data.get("raw_text", main_text)
+                    else:
+                        # Plain text (default)
+                        result["content"] = main_text
+                    
+                    # Limit content length
+                    if len(result["content"]) > max_content_length:
+                        result["content"] = result["content"][:max_content_length] + "\n\n... [truncated]"
+                    
+                else:
+                    # Fallback to readability if trafilatura fails
+                    extraction_mode = "readability"
             
-            # Include raw HTML if requested
-            if include_html:
-                result["html"] = article_html
+            # Readability extraction (fallback or explicit)
+            if extraction_mode == "readability":
+                doc = Document(html_content)
+                soup = BeautifulSoup(html_content, 'lxml')
+                
+                # Extract enhanced metadata
+                metadata = {
+                    "title": doc.title(),
+                    "url": final_url,
+                    "status_code": response.status_code,
+                    "content_type": response.headers.get("content-type", ""),
+                }
+                
+                # Extract more metadata
+                for meta in soup.find_all("meta"):
+                    name = meta.get("name", "").lower() or meta.get("property", "").lower()
+                    content = meta.get("content", "")
+                    
+                    if "description" in name and content:
+                        metadata["description"] = content
+                    elif "author" in name and content:
+                        metadata["author"] = content
+                    elif "keywords" in name and content:
+                        metadata["keywords"] = content
+                    elif "published" in name or "article:published" in name:
+                        metadata["published_date"] = content
+                    elif "site_name" in name or "og:site_name" in name:
+                        metadata["sitename"] = content
+                
+                result["metadata"] = metadata
+                
+                # Extract main content
+                article_html = doc.summary()
+                article_soup = BeautifulSoup(article_html, 'lxml')
+                
+                if format == "markdown":
+                    # Convert to markdown
+                    h = html2text.HTML2Text()
+                    h.ignore_links = not include_links
+                    h.ignore_images = not include_images
+                    h.body_width = 0
+                    result["content"] = h.handle(article_html)
+                elif format == "html":
+                    result["content"] = article_html
+                else:
+                    # Clean text
+                    main_text = article_soup.get_text(separator="\n", strip=True)
+                    # Remove excessive newlines
+                    main_text = re.sub(r'\n{3,}', '\n\n', main_text)
+                    result["content"] = main_text
+                
+                # Limit content length
+                if len(result["content"]) > max_content_length:
+                    result["content"] = result["content"][:max_content_length] + "\n\n... [truncated]"
+                
+                # Extract headings structure
+                headings = []
+                for heading in article_soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                    text = heading.get_text(strip=True)
+                    if text:
+                        headings.append({
+                            "level": heading.name,
+                            "text": text
+                        })
+                result["headings"] = headings
+                
+                # Extract links if requested
+                if include_links:
+                    links = []
+                    for link in article_soup.find_all('a', href=True):
+                        href = link['href']
+                        text = link.get_text(strip=True)
+                        if text and href:
+                            absolute_url = urljoin(final_url, href)
+                            links.append({
+                                "text": text,
+                                "url": absolute_url
+                            })
+                    result["links"] = links[:100]  # Limit to 100 links
+                
+                # Extract images if requested
+                if include_images:
+                    images = []
+                    for img in article_soup.find_all('img'):
+                        src = img.get('src') or img.get('data-src')
+                        if src:
+                            img_url = urljoin(final_url, src)
+                            images.append({
+                                "url": img_url,
+                                "alt": img.get('alt', ''),
+                                "title": img.get('title', '')
+                            })
+                    result["images"] = images[:50]  # Limit to 50 images
             
-            # Extract headings
-            headings = []
-            for heading in article_soup.find_all(['h1', 'h2', 'h3']):
-                headings.append({
-                    "level": heading.name,
-                    "text": heading.get_text(strip=True)
-                })
-            result["headings"] = headings
-            
-            # Extract images
-            images = []
-            for img in article_soup.find_all('img', src=True):
-                img_url = urljoin(url, img['src'])
-                images.append({
-                    "url": img_url,
-                    "alt": img.get('alt', ''),
-                })
-            result["images"] = images[:20]  # Limit to 20 images
+            # Add content statistics
+            result["stats"] = {
+                "content_length": len(result["content"]),
+                "word_count": len(result["content"].split()),
+                "extraction_mode": extraction_mode,
+                "format": format
+            }
             
             return JSONResponse(content=result)
             
@@ -213,18 +352,19 @@ async def search_and_fetch(
     num_results: int = Query(3, description="Number of results to fetch (1-5)", ge=1, le=5),
     categories: Optional[str] = Query("general", description="Search categories"),
     language: Optional[str] = Query("en", description="Search language"),
-    max_content_length: int = Query(50000, description="Maximum content length per page")
+    format: str = Query("markdown", description="Output format: text, markdown, or html"),
+    max_content_length: int = Query(100000, description="Maximum content length per page")
 ):
     """
-    Search and automatically fetch full content from top N results
+    Search and automatically fetch full content from top N results (Enhanced with Trafilatura)
     
     This is a convenience endpoint that:
     1. Searches for your query
     2. Gets top N results (default: 3, max: 5)
-    3. Fetches full webpage content for each result
-    4. Returns both search snippets AND full content
+    3. Fetches full webpage content using advanced extraction
+    4. Returns both search snippets AND full content (markdown/text/html)
     
-    Example: /search-and-fetch?query=python+tutorials&num_results=3
+    Example: /search-and-fetch?query=python+tutorials&num_results=3&format=markdown
     """
     try:
         # Step 1: Perform search
@@ -256,7 +396,7 @@ async def search_and_fetch(
         
         # Step 2: Fetch content from each URL in parallel
         async def fetch_single_url(result: dict) -> dict:
-            """Fetch content for a single search result"""
+            """Fetch content for a single search result using enhanced extraction"""
             url = result.get("url", "")
             
             # Validate URL
@@ -273,45 +413,106 @@ async def search_and_fetch(
                 async with httpx.AsyncClient(
                     timeout=30.0,
                     follow_redirects=True,
-                    headers={"User-Agent": "Mozilla/5.0 (compatible; SearXNG-API-Bot/1.0)"}
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    }
                 ) as client:
                     response = await client.get(url)
                     response.raise_for_status()
                     
                     html_content = response.text
-                    doc = Document(html_content)
-                    article_html = doc.summary()
-                    article_soup = BeautifulSoup(article_html, 'lxml')
-                    main_text = article_soup.get_text(separator="\n", strip=True)
+                    final_url = str(response.url)
                     
-                    # Limit content length
-                    if len(main_text) > max_content_length:
-                        main_text = main_text[:max_content_length] + "... (truncated)"
+                    # Use trafilatura for better extraction
+                    extracted = trafilatura.extract(
+                        html_content,
+                        include_comments=False,
+                        include_tables=True,
+                        include_images=True,
+                        include_links=True,
+                        output_format='json',
+                        url=final_url,
+                        with_metadata=True
+                    )
                     
-                    # Extract headings
-                    headings = []
-                    for heading in article_soup.find_all(['h1', 'h2', 'h3']):
-                        headings.append({
-                            "level": heading.name,
-                            "text": heading.get_text(strip=True)
-                        })
-                    
-                    return {
-                        "search_result": {
-                            "title": result.get("title", ""),
-                            "url": url,
-                            "snippet": result.get("content", ""),
-                            "engine": result.get("engine", ""),
-                            "score": result.get("score", 0)
-                        },
-                        "fetch_status": "success",
-                        "fetched_content": {
-                            "title": doc.title(),
-                            "content": main_text,
-                            "headings": headings[:10],  # Limit to 10 headings
-                            "content_length": len(main_text)
+                    if extracted:
+                        import json
+                        data = json.loads(extracted)
+                        
+                        # Get content in requested format
+                        if format == "markdown":
+                            content = trafilatura.extract(
+                                html_content,
+                                include_comments=False,
+                                include_tables=True,
+                                output_format='markdown',
+                                url=final_url
+                            ) or data.get("text", "")
+                        elif format == "html":
+                            content = data.get("raw_text", data.get("text", ""))
+                        else:
+                            content = data.get("text", "")
+                        
+                        # Limit content length
+                        if len(content) > max_content_length:
+                            content = content[:max_content_length] + "\n\n... [truncated]"
+                        
+                        return {
+                            "search_result": {
+                                "title": result.get("title", ""),
+                                "url": final_url,
+                                "snippet": result.get("content", ""),
+                                "engine": result.get("engine", ""),
+                                "score": result.get("score", 0)
+                            },
+                            "fetch_status": "success",
+                            "fetched_content": {
+                                "title": data.get("title", result.get("title", "")),
+                                "author": data.get("author", ""),
+                                "date": data.get("date", ""),
+                                "sitename": data.get("sitename", ""),
+                                "content": content,
+                                "word_count": len(content.split()),
+                                "format": format
+                            }
                         }
-                    }
+                    else:
+                        # Fallback to readability
+                        doc = Document(html_content)
+                        article_html = doc.summary()
+                        
+                        if format == "markdown":
+                            h = html2text.HTML2Text()
+                            h.body_width = 0
+                            content = h.handle(article_html)
+                        elif format == "html":
+                            content = article_html
+                        else:
+                            article_soup = BeautifulSoup(article_html, 'lxml')
+                            content = article_soup.get_text(separator="\n", strip=True)
+                            content = re.sub(r'\n{3,}', '\n\n', content)
+                        
+                        # Limit content length
+                        if len(content) > max_content_length:
+                            content = content[:max_content_length] + "\n\n... [truncated]"
+                        
+                        return {
+                            "search_result": {
+                                "title": result.get("title", ""),
+                                "url": final_url,
+                                "snippet": result.get("content", ""),
+                                "engine": result.get("engine", ""),
+                                "score": result.get("score", 0)
+                            },
+                            "fetch_status": "success",
+                            "fetched_content": {
+                                "title": doc.title(),
+                                "content": content,
+                                "word_count": len(content.split()),
+                                "format": format
+                            }
+                        }
                     
             except httpx.HTTPStatusError as e:
                 return {

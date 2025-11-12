@@ -5,13 +5,14 @@ A production-ready FastAPI wrapper for SearXNG that provides LLM-friendly search
 ## 🚀 Features
 
 - **🔍 Web Search API**: Search using multiple search engines via SearXNG
-- **📄 Content Extraction**: Fetch and clean webpage content
+- **📄 Enhanced Content Extraction**: Fetch and clean webpage content with **Trafilatura** (Firecrawl-quality)
+- **📝 Markdown Output**: Get structured markdown like Firecrawl (NEW!)
 - **🎯 Search & Fetch**: Automatically search and fetch full content from top N results
 - **⚡ Fast & Async**: Built with FastAPI and async/await
 - **🐳 Docker Ready**: One-command deployment
 - **☁️ Cloud Deploy**: Pre-configured for Render
 - **🆓 Free Hosting**: Runs on Render free tier (750 hours/month)
-- **🤖 LLM Optimized**: Clean JSON responses perfect for LLM consumption
+- **🤖 LLM Optimized**: Clean JSON/Markdown responses perfect for LLM consumption
 
 ## 📁 Project Structure
 
@@ -58,41 +59,74 @@ curl "https://your-app.onrender.com/search-api?query=weather&categories=general"
 }
 ```
 
-### 2. `/fetch` - Content Extraction
-Extract clean, readable content from any webpage.
+### 2. `/fetch` - Content Extraction ⭐ ENHANCED
+Extract clean, readable content from any webpage with **Firecrawl-like quality**.
 
-**Example:**
+**New Features:**
+- 🎯 **Trafilatura extraction** - Better accuracy than basic parsers
+- 📝 **Markdown output** - Get structured markdown like Firecrawl
+- 📊 **Rich metadata** - Authors, dates, site names automatically extracted
+- ⚡ **Still fast** - No browser overhead, pure parsing speed
+
+**Example (Markdown output):**
 ```bash
-curl "https://your-app.onrender.com/fetch?url=https://example.com"
+curl "https://your-app.onrender.com/fetch?url=https://example.com&format=markdown"
 ```
+
+**Example (Better text extraction):**
+```bash
+curl "https://your-app.onrender.com/fetch?url=https://example.com&extraction_mode=trafilatura"
+```
+
+**Parameters:**
+- `url` (required) - URL to fetch
+- `format` - Output format: `text`, `markdown`, or `html` (default: text)
+- `extraction_mode` - Engine: `trafilatura` (best quality) or `readability` (faster)
+- `include_links` - Include extracted links (default: true)
+- `include_images` - Include images (default: true)
+- `max_content_length` - Max content length (default: 100000)
 
 **Response:**
 ```json
 {
+  "success": true,
+  "url": "https://example.com",
+  "status_code": 200,
   "metadata": {
-    "title": "Example Domain",
-    "url": "https://example.com",
-    "status_code": 200
+    "title": "Example Article",
+    "author": "John Doe",
+    "date": "2024-01-15",
+    "sitename": "Example Site",
+    "description": "Article description",
+    "language": "en"
   },
-  "content": "Clean extracted text...",
+  "content": "# Example Article\n\nClean markdown content...",
+  "stats": {
+    "content_length": 5420,
+    "word_count": 890,
+    "extraction_mode": "trafilatura",
+    "format": "markdown"
+  },
   "headings": [...],
   "links": [...],
   "images": [...]
 }
 ```
 
-### 3. `/search-and-fetch` - Search & Auto-Fetch Content ⭐ NEW
-**The most powerful endpoint!** Searches and automatically fetches full content from top results.
+### 3. `/search-and-fetch` - Search & Auto-Fetch Content ⭐ ENHANCED
+**The most powerful endpoint!** Searches and automatically fetches full content with **Trafilatura quality**.
 
 **Example:**
 ```bash
-curl "https://your-app.onrender.com/search-and-fetch?query=python+tutorials&num_results=3"
+curl "https://your-app.onrender.com/search-and-fetch?query=python+tutorials&num_results=3&format=markdown"
 ```
 
 **What it does:**
 - ✅ Searches for your query
 - ✅ Gets top N results (default: 3, max: 5)
 - ✅ Automatically fetches full content from each URL (parallel)
+- ✅ Uses **Trafilatura** for Firecrawl-quality extraction
+- ✅ Supports markdown, text, or HTML output
 - ✅ Returns both search snippets AND full webpage content
 - ✅ Handles errors gracefully if a page can't be fetched
 
@@ -130,9 +164,10 @@ curl "https://your-app.onrender.com/search-and-fetch?query=python+tutorials&num_
 **Parameters:**
 - `query` (required) - Search query
 - `num_results` (optional) - Number of results to fetch (1-5, default: 3)
+- `format` (optional) - Output format: text, markdown, html (default: markdown)
 - `categories` (optional) - Search categories (default: general)
 - `language` (optional) - Language code (default: en)
-- `max_content_length` (optional) - Max content per page (default: 50000)
+- `max_content_length` (optional) - Max content per page (default: 100000)
 
 ### 4. `/health` - Health Check
 ```bash
