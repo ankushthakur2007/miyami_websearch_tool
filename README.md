@@ -5,8 +5,9 @@ A production-ready FastAPI wrapper for SearXNG that provides LLM-friendly search
 ## 🚀 Features
 
 - **🔍 Web Search API**: Search using multiple search engines via SearXNG
+- **⏰ Time-Range Filters**: Filter search results by recency (day, week, month, year) - NEW!
 - **📄 Enhanced Content Extraction**: Fetch and clean webpage content with **Trafilatura** (Firecrawl-quality)
-- **📝 Markdown Output**: Get structured markdown like Firecrawl (NEW!)
+- **📝 Markdown Output**: Get structured markdown like Firecrawl
 - **🎯 Search & Fetch**: Automatically search and fetch full content from top N results
 - **⚡ Fast & Async**: Built with FastAPI and async/await
 - **🐳 Docker Ready**: One-command deployment
@@ -32,12 +33,25 @@ miyami_search_api/
 
 ## 🛠️ API Endpoints
 
-### 1. `/search-api` - Web Search
-Search the web using multiple engines and get structured results.
+### 1. `/search-api` - Web Search ⭐ ENHANCED WITH TIME FILTERS
+Search the web using multiple engines and get structured results with time-based filtering.
 
-**Example:**
+**Parameters:**
+- `query` (required) - Search query
+- `categories` (optional) - Search categories (default: general)
+- `language` (optional) - Language code (default: en)
+- `time_range` (optional) - **NEW!** Filter by recency: `day`, `week`, `month`, `year`
+
+**Examples:**
 ```bash
+# Basic search
 curl "https://your-app.onrender.com/search-api?query=weather&categories=general"
+
+# Recent news (past 24 hours)
+curl "https://your-app.onrender.com/search-api?query=AI+news&time_range=day"
+
+# Recent tutorials (past week)
+curl "https://your-app.onrender.com/search-api?query=python+tutorials&time_range=week"
 ```
 
 **Response:**
@@ -113,16 +127,23 @@ curl "https://your-app.onrender.com/fetch?url=https://example.com&extraction_mod
 }
 ```
 
-### 3. `/search-and-fetch` - Search & Auto-Fetch Content ⭐ ENHANCED
+### 3. `/search-and-fetch` - Search & Auto-Fetch Content ⭐ ENHANCED WITH TIME FILTERS
 **The most powerful endpoint!** Searches and automatically fetches full content with **Trafilatura quality**.
 
-**Example:**
+**Examples:**
 ```bash
+# Basic search and fetch
 curl "https://your-app.onrender.com/search-and-fetch?query=python+tutorials&num_results=3&format=markdown"
+
+# Recent AI news articles (past 24 hours)
+curl "https://your-app.onrender.com/search-and-fetch?query=AI+breakthroughs&num_results=5&time_range=day&format=markdown"
+
+# Recent tutorials (past week)
+curl "https://your-app.onrender.com/search-and-fetch?query=web+development&num_results=3&time_range=week"
 ```
 
 **What it does:**
-- ✅ Searches for your query
+- ✅ Searches for your query (with optional time filter)
 - ✅ Gets top N results (default: 3, max: 5)
 - ✅ Automatically fetches full content from each URL (parallel)
 - ✅ Uses **Trafilatura** for Firecrawl-quality extraction
@@ -167,6 +188,7 @@ curl "https://your-app.onrender.com/search-and-fetch?query=python+tutorials&num_
 - `format` (optional) - Output format: text, markdown, html (default: markdown)
 - `categories` (optional) - Search categories (default: general)
 - `language` (optional) - Language code (default: en)
+- `time_range` (optional) - **NEW!** Filter by recency: `day`, `week`, `month`, `year`
 - `max_content_length` (optional) - Max content per page (default: 100000)
 
 ### 4. `/health` - Health Check
@@ -243,7 +265,7 @@ Search the internet and get relevant results.
 ```json
 {
   "name": "web_search",
-  "description": "Search the web using multiple search engines (DuckDuckGo, Google, Bing, Brave, Wikipedia). Returns current information from the internet.",
+  "description": "Search the web using multiple search engines (DuckDuckGo, Google, Bing, Brave, Wikipedia). Returns current information from the internet with optional time-range filtering.",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -254,6 +276,11 @@ Search the internet and get relevant results.
       "categories": {
         "type": "string",
         "description": "Search categories: general, news, images, videos (default: general)"
+      },
+      "time_range": {
+        "type": "string",
+        "enum": ["day", "week", "month", "year"],
+        "description": "Filter results by recency: day (past 24h), week (past week), month (past month), year (past year)"
       }
     },
     "required": ["query"]
@@ -266,26 +293,32 @@ Search the internet and get relevant results.
 # Search for current information
 curl "https://miyami-websearch-tool.onrender.com/search-api?query=latest+AI+news"
 
-# Search with specific category
-curl "https://miyami-websearch-tool.onrender.com/search-api?query=python+tutorials&categories=general"
+# Search for recent news (past 24 hours)
+curl "https://miyami-websearch-tool.onrender.com/search-api?query=AI+breakthroughs&time_range=day"
+
+# Search for recent tutorials (past week)
+curl "https://miyami-websearch-tool.onrender.com/search-api?query=python+tutorials&time_range=week&categories=general"
 ```
 
 **Python Implementation:**
 ```python
 import httpx
 
-async def web_search(query: str, categories: str = "general"):
-    """Search the web for current information"""
+async def web_search(query: str, categories: str = "general", time_range: str = None):
+    """Search the web for current information with optional time filter"""
     async with httpx.AsyncClient(timeout=30.0) as client:
+        params = {"query": query, "categories": categories}
+        if time_range:
+            params["time_range"] = time_range
         response = await client.get(
             "https://miyami-websearch-tool.onrender.com/search-api",
-            params={"query": query, "categories": categories}
+            params=params
         )
         return response.json()
 
-# Usage
-results = await web_search("weather in Tokyo")
-print(f"Found {results['number_of_results']} results")
+# Usage - Get recent AI news from past 24 hours
+results = await web_search("AI news", time_range="day")
+print(f"Found {results['number_of_results']} recent results")
 for result in results['results'][:5]:
     print(f"- {result['title']}: {result['url']}")
 ```
@@ -358,7 +391,7 @@ Search and automatically fetch full content from top N results in one request.
 ```json
 {
   "name": "search_and_fetch",
-  "description": "Search the web and automatically fetch full content from top N results. Perfect for research tasks - gets both search snippets and full article content in one request.",
+  "description": "Search the web and automatically fetch full content from top N results. Perfect for research tasks - gets both search snippets and full article content in one request. Supports time-range filtering for recent content.",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -373,6 +406,11 @@ Search and automatically fetch full content from top N results in one request.
       "categories": {
         "type": "string",
         "description": "Search categories: general, news, images, videos (default: general)"
+      },
+      "time_range": {
+        "type": "string",
+        "enum": ["day", "week", "month", "year"],
+        "description": "Filter results by recency: day (past 24h), week (past week), month (past month), year (past year)"
       }
     },
     "required": ["query"]
@@ -385,25 +423,31 @@ Search and automatically fetch full content from top N results in one request.
 # Search and fetch top 3 results
 curl "https://miyami-websearch-tool.onrender.com/search-and-fetch?query=python+tutorials&num_results=3"
 
-# Research task with news category
-curl "https://miyami-websearch-tool.onrender.com/search-and-fetch?query=AI+breakthroughs&categories=news&num_results=5"
+# Get recent AI news articles (past 24 hours) with full content
+curl "https://miyami-websearch-tool.onrender.com/search-and-fetch?query=AI+breakthroughs&time_range=day&num_results=5&format=markdown"
+
+# Research recent developments (past week)
+curl "https://miyami-websearch-tool.onrender.com/search-and-fetch?query=quantum+computing&time_range=week&num_results=3"
 ```
 
 **Python Implementation:**
 ```python
 import httpx
 
-async def search_and_fetch(query: str, num_results: int = 3, categories: str = "general"):
-    """Search and fetch full content from top results"""
+async def search_and_fetch(query: str, num_results: int = 3, categories: str = "general", time_range: str = None):
+    """Search and fetch full content from top results with optional time filter"""
     async with httpx.AsyncClient(timeout=60.0) as client:
+        params = {"query": query, "num_results": num_results, "categories": categories}
+        if time_range:
+            params["time_range"] = time_range
         response = await client.get(
             "https://miyami-websearch-tool.onrender.com/search-and-fetch",
-            params={"query": query, "num_results": num_results, "categories": categories}
+            params=params
         )
         return response.json()
 
-# Usage
-results = await search_and_fetch("quantum computing", num_results=3)
+# Usage - Get recent AI news with full article content
+results = await search_and_fetch("AI breakthroughs", num_results=5, time_range="day")
 print(f"Found {results['num_results_found']} results")
 print(f"Successfully fetched: {results['successful_fetches']}")
 for item in results['results']:

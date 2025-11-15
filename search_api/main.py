@@ -9,6 +9,7 @@ from urllib.parse import urljoin, urlparse
 import trafilatura
 import html2text
 from dateutil import parser as date_parser
+from datetime import datetime, timedelta
 import re
 
 app = FastAPI(
@@ -37,12 +38,20 @@ async def search_api(
     categories: Optional[str] = Query(None, description="Search categories (general, images, videos, etc.)"),
     engines: Optional[str] = Query(None, description="Specific engines to use"),
     language: Optional[str] = Query("en", description="Search language"),
-    page: Optional[int] = Query(1, description="Page number")
+    page: Optional[int] = Query(1, description="Page number"),
+    time_range: Optional[str] = Query(None, description="Time filter: day (past 24h), week (past week), month (past month), year (past year)")
 ):
     """
-    Search using SearXNG and return JSON results
+    Search using SearXNG and return JSON results with optional time filtering
     
-    Example: /search-api?query=weather&categories=general
+    Time Range Options:
+    - day: Results from the past 24 hours
+    - week: Results from the past week
+    - month: Results from the past month
+    - year: Results from the past year
+    - None: All results (default)
+    
+    Example: /search-api?query=AI+news&categories=general&time_range=day
     """
     try:
         params = {
@@ -56,6 +65,17 @@ async def search_api(
             params["categories"] = categories
         if engines:
             params["engines"] = engines
+        
+        # Add time range filter if specified
+        if time_range:
+            valid_ranges = ["day", "week", "month", "year"]
+            if time_range.lower() in valid_ranges:
+                params["time_range"] = time_range.lower()
+            else:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Invalid time_range. Must be one of: {', '.join(valid_ranges)}"
+                )
         
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(f"{SEARXNG_URL}/search", params=params)
@@ -353,18 +373,25 @@ async def search_and_fetch(
     categories: Optional[str] = Query("general", description="Search categories"),
     language: Optional[str] = Query("en", description="Search language"),
     format: str = Query("markdown", description="Output format: text, markdown, or html"),
-    max_content_length: int = Query(100000, description="Maximum content length per page")
+    max_content_length: int = Query(100000, description="Maximum content length per page"),
+    time_range: Optional[str] = Query(None, description="Time filter: day, week, month, year")
 ):
     """
     Search and automatically fetch full content from top N results (Enhanced with Trafilatura)
     
     This is a convenience endpoint that:
-    1. Searches for your query
+    1. Searches for your query (with optional time filter)
     2. Gets top N results (default: 3, max: 5)
     3. Fetches full webpage content using advanced extraction
     4. Returns both search snippets AND full content (markdown/text/html)
     
-    Example: /search-and-fetch?query=python+tutorials&num_results=3&format=markdown
+    Time Range Options:
+    - day: Results from the past 24 hours
+    - week: Results from the past week
+    - month: Results from the past month
+    - year: Results from the past year
+    
+    Example: /search-and-fetch?query=AI+news&num_results=3&format=markdown&time_range=day
     """
     try:
         # Step 1: Perform search
@@ -377,6 +404,17 @@ async def search_and_fetch(
         
         if categories:
             search_params["categories"] = categories
+        
+        # Add time range filter if specified
+        if time_range:
+            valid_ranges = ["day", "week", "month", "year"]
+            if time_range.lower() in valid_ranges:
+                search_params["time_range"] = time_range.lower()
+            else:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Invalid time_range. Must be one of: {', '.join(valid_ranges)}"
+                )
         
         async with httpx.AsyncClient(timeout=30.0) as client:
             search_response = await client.get(f"{SEARXNG_URL}/search", params=search_params)
