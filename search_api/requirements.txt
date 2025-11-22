@@ -7,3 +7,5 @@ lxml
 html2text
 trafilatura
 python-dateutil
+flashrank
+diskcache

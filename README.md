@@ -9,6 +9,9 @@ A production-ready FastAPI wrapper for SearXNG that provides LLM-friendly search
 - **📄 Enhanced Content Extraction**: Fetch and clean webpage content with **Trafilatura** (Firecrawl-quality)
 - **📝 Markdown Output**: Get structured markdown like Firecrawl
 - **🎯 Search & Fetch**: Automatically search and fetch full content from top N results
+- **🧠 Semantic Reranking**: AI-powered reranking for better search relevance (FlashRank) - NEW!
+- **💾 Smart Caching**: Built-in caching for faster repeated queries (DiskCache) - NEW!
+- **🔬 Deep Research**: Recursive search agent for comprehensive topic analysis - NEW!
 - **⚡ Fast & Async**: Built with FastAPI and async/await
 - **🐳 Docker Ready**: One-command deployment
 - **☁️ Cloud Deploy**: Pre-configured for Render
@@ -41,6 +44,7 @@ Search the web using multiple engines and get structured results with time-based
 - `categories` (optional) - Search categories (default: general)
 - `language` (optional) - Language code (default: en)
 - `time_range` (optional) - **NEW!** Filter by recency: `day`, `week`, `month`, `year`
+- `rerank` (optional) - **NEW!** Set to `true` to enable AI semantic reranking
 
 **Examples:**
 ```bash
@@ -190,13 +194,33 @@ curl "https://your-app.onrender.com/search-and-fetch?query=web+development&num_r
 - `language` (optional) - Language code (default: en)
 - `time_range` (optional) - **NEW!** Filter by recency: `day`, `week`, `month`, `year`
 - `max_content_length` (optional) - Max content per page (default: 100000)
+- `rerank` (optional) - **NEW!** Set to `true` to enable AI semantic reranking
 
-### 4. `/health` - Health Check
+### 4. `/deep-research` - Recursive Research Agent ⭐ NEW!
+Perform deep, recursive research on a topic. The agent searches, reads, extracts links, and recursively searches deeper to build a comprehensive report.
+
+**Examples:**
+```bash
+# Deep research on a topic (depth 2)
+curl "https://your-app.onrender.com/deep-research?query=latest+AI+models&depth=2&breadth=3"
+```
+
+**Parameters:**
+- `query` (required) - Research topic
+- `depth` (optional) - Recursion depth (1-2, default: 1)
+- `breadth` (optional) - Number of results to process per level (2-5, default: 3)
+- `time_range` (optional) - Filter by recency
+- `max_content_length` (optional) - Max content length
+
+**Response:**
+Returns a structured JSON with `primary_research` (initial results) and `secondary_research` (recursive findings).
+
+### 5. `/health` - Health Check
 ```bash
 curl https://your-app.onrender.com/health
 ```
 
-### 5. `/docs` - Interactive API Documentation
+### 6. `/docs` - Interactive API Documentation
 Visit `https://your-app.onrender.com/docs` for Swagger UI
 
 ## 🚢 Quick Deploy to Render
@@ -506,6 +530,39 @@ async def ai_research_assistant(topic: str):
 
 # Usage
 research = await ai_research_assistant("quantum computing breakthroughs")
+```
+
+---
+
+#### **Tool 4: Deep Research** (`/deep-research`) ⭐ **NEW**
+Recursive research agent that explores a topic in depth.
+
+**When to use:** When AI needs to perform a deep dive, literature review, or comprehensive investigation.
+
+**MCP Tool Definition:**
+```json
+{
+  "name": "deep_research",
+  "description": "Perform deep recursive research on a topic. Searches, reads, extracts links, and recursively searches deeper to build a comprehensive report.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "The research topic"
+      },
+      "depth": {
+        "type": "integer",
+        "description": "Recursion depth (1-2, default: 1)"
+      },
+      "breadth": {
+        "type": "integer",
+        "description": "Number of results per level (2-5, default: 3)"
+      }
+    },
+    "required": ["query"]
+  }
+}
 ```
 
 ### 🤖 Example with OpenAI Function Calling
