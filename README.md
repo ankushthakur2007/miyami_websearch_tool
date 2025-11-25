@@ -13,9 +13,6 @@ A production-ready FastAPI wrapper for SearXNG that provides LLM-friendly search
 - **💾 Smart Caching**: Built-in caching for faster repeated queries (DiskCache) - NEW!
 - **🔬 Deep Research**: Recursive search agent for comprehensive topic analysis - NEW!
 - **⚡ Fast & Async**: Built with FastAPI and async/await
-- **🐳 Docker Ready**: One-command deployment
-- **☁️ Cloud Deploy**: Pre-configured for Render
-- **🆓 Free Hosting**: Runs on Render free tier (750 hours/month)
 - **🤖 LLM Optimized**: Clean JSON/Markdown responses perfect for LLM consumption
 
 ## 📁 Project Structure
