@@ -220,26 +220,6 @@ curl https://your-app.onrender.com/health
 ### 6. `/docs` - Interactive API Documentation
 Visit `https://your-app.onrender.com/docs` for Swagger UI
 
-## 🚢 Quick Deploy to Render
-
-### 1. Push to GitHub
-```bash
-cd miyami_search_api
-git add .
-git commit -m "Deploy to Render"
-git push origin main
-```
-
-### 2. Deploy on Render
-1. Go to [render.com](https://render.com) and sign in with GitHub
-2. Click **New +** → **Web Service**
-3. Select your repository
-4. Render auto-detects Docker and deploys!
-
-Your API will be live at `https://your-app.onrender.com` in 5 minutes! 🎉
-
-See [RENDER_DEPLOYMENT.md](RENDER_DEPLOYMENT.md) for detailed instructions.
-
 ## 💻 Local Development
 
 ### Run with Docker
@@ -662,34 +642,8 @@ View logs and metrics on Render Dashboard:
 - No data is logged or stored
 - Privacy-focused search (via SearXNG)
 
-## 🆓 Free Tier Details
-
-Render free tier:
-- 750 hours/month (enough for 24/7)
-- 512 MB RAM
-- 100 GB bandwidth/month
-- Auto HTTPS (free SSL)
-- Spins down after 15 min inactivity
-- 30-60s cold start time
 
 Perfect for LLM search tools with moderate usage!
-
-## 🛟 Troubleshooting
-
-**App not responding?**
-- Check logs in Render Dashboard → Logs tab
-- Check if service spun down (free tier)
-
-**Out of memory?**
-- Upgrade to Starter plan ($7/month) for more RAM
-- Or optimize Docker image
-
-**Slow first request?**
-- Normal on free tier - app wakes from sleep
-- Takes 30-60 seconds (SearXNG initialization)
-- Use uptime monitor to keep it active
-
-See [RENDER_DEPLOYMENT.md](RENDER_DEPLOYMENT.md) for detailed troubleshooting.
 
 ## 📝 License
 
@@ -708,7 +662,6 @@ Feel free to:
 
 - [SearXNG Documentation](https://docs.searxng.org/)
 - [FastAPI Documentation](https://fastapi.tiangolo.com/)
-- [Render Documentation](https://render.com/docs)
 
 ## 🎯 Use Cases
 
