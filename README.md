@@ -5,13 +5,13 @@ A production-ready FastAPI wrapper for SearXNG that provides LLM-friendly search
 ## 🚀 Features
 
 - **🔍 Web Search API**: Search using multiple search engines via SearXNG
-- **⏰ Time-Range Filters**: Filter search results by recency (day, week, month, year) - NEW!
+- **⏰ Time-Range Filters**: Filter search results by recency (day, week, month, year)
 - **📄 Enhanced Content Extraction**: Fetch and clean webpage content with **Trafilatura** (Firecrawl-quality)
 - **📝 Markdown Output**: Get structured markdown like Firecrawl
 - **🎯 Search & Fetch**: Automatically search and fetch full content from top N results
-- **🧠 Semantic Reranking**: AI-powered reranking for better search relevance (FlashRank) - NEW!
-- **💾 Smart Caching**: Built-in caching for faster repeated queries (DiskCache) - NEW!
-- **🔬 Deep Research**: Recursive search agent for comprehensive topic analysis - NEW!
+- **🧠 Semantic Reranking**: AI-powered reranking for better search relevance (FlashRank)
+- **💾 Smart Caching**: Built-in caching for faster repeated queries (DiskCache)
+- **🔬 Deep Research**: Multi-query parallel research with compiled markdown reports - ENHANCED!
 - **⚡ Fast & Async**: Built with FastAPI and async/await
 - **🤖 LLM Optimized**: Clean JSON/Markdown responses perfect for LLM consumption
 
@@ -193,24 +193,59 @@ curl "https://your-app.onrender.com/search-and-fetch?query=web+development&num_r
 - `max_content_length` (optional) - Max content per page (default: 100000)
 - `rerank` (optional) - **NEW!** Set to `true` to enable AI semantic reranking
 
-### 4. `/deep-research` - Recursive Research Agent ⭐ NEW!
-Perform deep, recursive research on a topic. The agent searches, reads, extracts links, and recursively searches deeper to build a comprehensive report.
+### 4. `/deep-research` - Multi-Query Research Agent ⭐ ENHANCED!
+Perform comprehensive research across multiple queries in parallel and compile results into a unified report.
 
 **Examples:**
 ```bash
-# Deep research on a topic (depth 2)
-curl "https://your-app.onrender.com/deep-research?query=latest+AI+models&depth=2&breadth=3"
+# Research multiple topics at once
+curl "https://your-app.onrender.com/deep-research?queries=AI+trends+2024,machine+learning+basics,ChatGPT+use+cases&breadth=2"
+
+# With time filter
+curl "https://your-app.onrender.com/deep-research?queries=python+news,javascript+updates&breadth=3&time_range=month"
 ```
 
 **Parameters:**
-- `query` (required) - Research topic
-- `depth` (optional) - Recursion depth (1-2, default: 1)
-- `breadth` (optional) - Number of results to process per level (2-5, default: 3)
-- `time_range` (optional) - Filter by recency
-- `max_content_length` (optional) - Max content length
+- `queries` (required) - Comma-separated list of research queries (max 10)
+- `breadth` (optional) - Number of results to fetch per query (1-5, default: 3)
+- `time_range` (optional) - Filter by recency: `day`, `week`, `month`, `year`
+- `max_content_length` (optional) - Max content length per result (default: 30000)
+- `include_suggestions` (optional) - Include search suggestions (default: true)
 
 **Response:**
-Returns a structured JSON with `primary_research` (initial results) and `secondary_research` (recursive findings).
+```json
+{
+  "research_summary": {
+    "total_queries": 3,
+    "successful_queries": 3,
+    "failed_queries": 0,
+    "total_results_found": 6,
+    "total_successful_fetches": 6,
+    "time_range_filter": null,
+    "breadth_per_query": 2
+  },
+  "queries": ["AI trends 2024", "machine learning basics", "ChatGPT use cases"],
+  "query_results": [
+    {
+      "query": "AI trends 2024",
+      "status": "success",
+      "num_results": 2,
+      "successful_fetches": 2,
+      "results": [...],
+      "suggestions": []
+    }
+  ],
+  "compiled_report": "# Deep Research Report\n\n**Queries Researched:** 3\n...",
+  "all_suggestions": []
+}
+```
+
+**Key Features:**
+- ✅ Process multiple queries in parallel for speed
+- ✅ AI reranking enabled by default for quality
+- ✅ Compiled markdown report with proper formatting
+- ✅ Results cached for 30 minutes
+- ✅ Full content extraction with metadata (author, date, sitename)
 
 ### 5. `/health` - Health Check
 ```bash

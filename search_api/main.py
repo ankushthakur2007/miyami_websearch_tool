@@ -669,65 +669,52 @@ async def search_and_fetch(
 
 @app.get("/deep-research")
 async def deep_research(
-    query: str = Query(..., description="Research query"),
-    depth: int = Query(1, description="Recursion depth (1-2)", ge=1, le=2),
-    breadth: int = Query(3, description="Breadth per level (2-5)", ge=2, le=5),
-    time_range: Optional[str] = Query(None, description="Time filter"),
-    max_content_length: int = Query(50000, description="Max content length")
+    queries: str = Query(..., description="Comma-separated list of research queries (e.g., 'AI trends,machine learning basics,neural networks')"),
+    breadth: int = Query(3, description="Number of results to fetch per query (1-5)", ge=1, le=5),
+    time_range: Optional[str] = Query(None, description="Time filter: day, week, month, year"),
+    max_content_length: int = Query(30000, description="Max content length per result"),
+    include_suggestions: bool = Query(True, description="Include search suggestions in output")
 ):
     """
-    Perform deep recursive research on a topic.
+    Perform comprehensive research across multiple queries and compile into a unified report.
     
     Workflow:
-    1. Search for the query.
-    2. Fetch top N results (breadth).
-    3. Extract links from those results.
-    4. If depth > 1, recursively fetch top M linked pages.
-    5. Return a structured research report.
+    1. Parse multiple queries (comma-separated)
+    2. For each query, search and fetch top N results (breadth)
+    3. Process all queries in parallel for speed
+    4. Compile all results into one detailed, well-formatted response
     
-    WARNING: This is a slow operation.
+    Example: /deep-research?queries=AI+trends,machine+learning+2024,GPT+applications&breadth=3&time_range=month
+    
+    Response includes:
+    - Summary statistics
+    - Per-query research results with full content
+    - Compiled markdown report
+    - All suggestions for further research
     """
+    # Parse queries
+    query_list = [q.strip() for q in queries.split(",") if q.strip()]
+    
+    if not query_list:
+        raise HTTPException(status_code=400, detail="No valid queries provided. Use comma-separated queries.")
+    
+    if len(query_list) > 10:
+        raise HTTPException(status_code=400, detail="Maximum 10 queries allowed per request.")
+    
+    # Check cache
+    cache_key = f"deep_research:{','.join(sorted(query_list))}:{breadth}:{time_range}:{max_content_length}"
+    cached_result = cache.get(cache_key)
+    if cached_result:
+        return JSONResponse(content=cached_result)
+    
     try:
-        # Initial search and fetch
-        initial_results = await search_and_fetch(
-            query=query, 
-            num_results=breadth, 
-            time_range=time_range, 
-            format="markdown",
-            max_content_length=max_content_length,
-            categories="general",
-            language="en",
-            rerank=True # Always rerank for deep research for better quality
-        )
-        
-        # If depth is 1, just return the initial results
-        if depth == 1:
-            return initial_results
-            
-        # Parse initial results to find interesting links
-        initial_data = initial_results.body.decode()
-        import json
-        data = json.loads(initial_data)
-        
-        # Collect links for the next level
-        next_level_urls = []
-        seen_urls = set()
-        
-        for result in data.get("results", []):
-            if result.get("fetch_status") == "success":
-                # Extract links from the content (this is a simplification, 
-                # ideally we'd parse the markdown or use the links from /fetch)
-                # For now, let's assume we can get some links or just use related searches
-                pass
-                
-        # Since extracting links from markdown is tricky without parsing, 
-        # let's use the 'suggestions' to do a secondary search for more breadth
-        secondary_results = []
-        if data.get("suggestions"):
-            for suggestion in data["suggestions"][:2]: # Take top 2 suggestions
-                sub_result = await search_and_fetch(
-                    query=suggestion,
-                    num_results=2,
+        # Process all queries in parallel
+        async def process_single_query(query: str) -> dict:
+            """Process a single query and return structured results"""
+            try:
+                result = await search_and_fetch(
+                    query=query,
+                    num_results=breadth,
                     time_range=time_range,
                     format="markdown",
                     max_content_length=max_content_length,
@@ -735,18 +722,148 @@ async def deep_research(
                     language="en",
                     rerank=True
                 )
-                secondary_results.append(json.loads(sub_result.body.decode()))
+                
+                # Parse JSONResponse
+                import json
+                data = json.loads(result.body.decode())
+                
+                return {
+                    "query": query,
+                    "status": "success",
+                    "num_results": data.get("num_results_found", 0),
+                    "successful_fetches": data.get("successful_fetches", 0),
+                    "results": data.get("results", []),
+                    "suggestions": data.get("suggestions", [])
+                }
+            except Exception as e:
+                return {
+                    "query": query,
+                    "status": "error",
+                    "error": str(e),
+                    "num_results": 0,
+                    "results": [],
+                    "suggestions": []
+                }
         
-        return {
-            "topic": query,
-            "depth": depth,
-            "breadth": breadth,
-            "primary_research": data,
-            "secondary_research": secondary_results
+        # Execute all queries in parallel
+        query_tasks = [process_single_query(q) for q in query_list]
+        query_results = await asyncio.gather(*query_tasks)
+        
+        # Compile statistics
+        total_results = sum(r["num_results"] for r in query_results)
+        total_successful = sum(r["successful_fetches"] for r in query_results if r["status"] == "success")
+        successful_queries = sum(1 for r in query_results if r["status"] == "success")
+        failed_queries = sum(1 for r in query_results if r["status"] == "error")
+        
+        # Collect all suggestions
+        all_suggestions = []
+        for r in query_results:
+            all_suggestions.extend(r.get("suggestions", []))
+        unique_suggestions = list(set(all_suggestions))[:20]  # Dedupe and limit
+        
+        # Generate compiled markdown report
+        compiled_report = _generate_compiled_report(query_list, query_results)
+        
+        # Build final response
+        final_response = {
+            "research_summary": {
+                "total_queries": len(query_list),
+                "successful_queries": successful_queries,
+                "failed_queries": failed_queries,
+                "total_results_found": total_results,
+                "total_successful_fetches": total_successful,
+                "time_range_filter": time_range,
+                "breadth_per_query": breadth
+            },
+            "queries": query_list,
+            "query_results": query_results,
+            "compiled_report": compiled_report,
+            "all_suggestions": unique_suggestions if include_suggestions else []
         }
+        
+        # Cache result (30 minutes for deep research)
+        cache.set(cache_key, final_response, expire=1800)
+        
+        return JSONResponse(content=final_response)
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Deep research failed: {str(e)}")
+
+
+def _generate_compiled_report(queries: List[str], results: List[dict]) -> str:
+    """Generate a compiled markdown report from all query results"""
+    
+    report_lines = [
+        "# Deep Research Report",
+        "",
+        f"**Queries Researched:** {len(queries)}",
+        f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "---",
+        ""
+    ]
+    
+    for i, result in enumerate(results, 1):
+        query = result.get("query", "Unknown")
+        report_lines.append(f"## {i}. {query}")
+        report_lines.append("")
+        
+        if result.get("status") == "error":
+            report_lines.append(f"⚠️ **Error:** {result.get('error', 'Unknown error')}")
+            report_lines.append("")
+            continue
+        
+        fetched_results = result.get("results", [])
+        if not fetched_results:
+            report_lines.append("*No results found for this query.*")
+            report_lines.append("")
+            continue
+        
+        for j, res in enumerate(fetched_results, 1):
+            search_result = res.get("search_result", {})
+            fetched_content = res.get("fetched_content", {})
+            
+            title = fetched_content.get("title") or search_result.get("title", "Untitled")
+            url = search_result.get("url", "")
+            author = fetched_content.get("author", "")
+            date = fetched_content.get("date", "")
+            sitename = fetched_content.get("sitename", "")
+            content = fetched_content.get("content", "")
+            
+            report_lines.append(f"### {i}.{j} {title}")
+            report_lines.append("")
+            
+            # Metadata line
+            meta_parts = []
+            if sitename:
+                meta_parts.append(f"**Source:** {sitename}")
+            if author:
+                meta_parts.append(f"**Author:** {author}")
+            if date:
+                meta_parts.append(f"**Date:** {date}")
+            if url:
+                meta_parts.append(f"[🔗 Link]({url})")
+            
+            if meta_parts:
+                report_lines.append(" | ".join(meta_parts))
+                report_lines.append("")
+            
+            if res.get("fetch_status") == "success" and content:
+                # Truncate content for report readability
+                if len(content) > 2000:
+                    content = content[:2000] + "\n\n*[Content truncated for report...]*"
+                report_lines.append(content)
+            elif res.get("fetch_status") == "error":
+                report_lines.append(f"*Failed to fetch: {res.get('fetch_error', 'Unknown error')}*")
+            else:
+                snippet = search_result.get("snippet", "No content available.")
+                report_lines.append(snippet)
+            
+            report_lines.append("")
+            report_lines.append("---")
+            report_lines.append("")
+    
+    return "\n".join(report_lines)
 
 @app.get("/health")
 @app.head("/health")
