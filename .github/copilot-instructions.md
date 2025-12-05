@@ -12,7 +12,11 @@ This is a **FastAPI wrapper around SearXNG** that provides LLM-optimized search 
 ## Project Structure
 
 ```
-search_api/main.py      # All API logic - endpoints, extraction, caching
+search_api/
+  main.py               # All API logic - endpoints, extraction, caching
+  stealth_client.py     # Anti-bot HTTP client with UA rotation, TLS fingerprinting (FREE)
+  antibot.py            # Bot detection for Cloudflare, reCAPTCHA, DataDome, etc. (FREE)
+  requirements.txt      # Python dependencies
 Dockerfile              # Multi-service container (SearXNG + FastAPI)
 start.sh                # Orchestrates both services with health checks
 searxng_settings.yml    # Search engine configuration and enabled engines
@@ -24,22 +28,30 @@ render.yaml             # Render.com deployment config
 | Endpoint | Purpose |
 |----------|---------|
 | `/search-api` | Search via SearXNG with optional time filtering and AI reranking |
-| `/fetch` | Extract clean content from URLs (Trafilatura or Readability) |
-| `/search-and-fetch` | Combined: search + parallel content extraction from top N results |
-| `/deep-research` | Multi-query research: processes comma-separated queries in parallel, compiles into unified report |
+| `/fetch` | Extract clean content from URLs with FREE stealth mode |
+| `/search-and-fetch` | Combined: search + parallel content extraction with stealth support |
+| `/deep-research` | Multi-query research: processes queries in parallel with stealth mode |
 | `/health` | Health check verifying SearXNG connectivity |
 
 ## Key Patterns & Technologies
 
 ### Caching
 - Uses **DiskCache** at `/tmp/miyami_cache` with 1-hour expiration
-- Cache keys combine query params: `f"search:{query}:{categories}:{engines}:{language}:{page}:{time_range}:{rerank}"`
+- Cache keys combine query params including stealth options
 - Always check cache before external calls
 
 ### Content Extraction (in `/fetch` and `/search-and-fetch`)
 - **Trafilatura** (default): Best quality, extracts metadata (author, date, sitename)
 - **Readability** (fallback): Faster but less metadata
 - Output formats: `text`, `markdown`, `html`
+
+### Stealth Mode & Anti-Bot Bypass (FREE - No API Keys Needed)
+- **StealthClient** (`stealth_client.py`): HTTP client with anti-detection capabilities
+  - `low`: Basic User-Agent rotation
+  - `medium`: UA + header randomization
+  - `high`: UA + headers + TLS fingerprint matching (via `curl_cffi`)
+- **antibot.py**: Detects bot protection (Cloudflare, reCAPTCHA, hCaptcha, DataDome, Akamai, PerimeterX, Imperva, Kasada)
+- **auto_bypass**: Automatically escalates stealth levels if blocked
 
 ### AI Reranking
 - Uses **FlashRank** with `ms-marco-TinyBERT-L-2-v2` model (lazy-loaded)
@@ -50,6 +62,7 @@ render.yaml             # Render.com deployment config
 - All HTTP calls use `httpx.AsyncClient` with 30s timeout
 - Parallel fetching in `/search-and-fetch` via `asyncio.gather()`
 - SearXNG accessed at `http://127.0.0.1:8888`
+- `advanced_fetch()` helper function handles stealth logic
 
 ## Development & Deployment
 
@@ -78,14 +91,29 @@ docker build -t miyami-search . && docker run -p 8080:8080 miyami-search
 - HTTP errors use `HTTPException` with specific status codes (400, 503, 500)
 - All endpoints return `JSONResponse` with structured data
 - Time range validation: `["day", "week", "month", "year"]`
+- Stealth mode validation: `["off", "low", "medium", "high"]`
 - Content truncation uses `max_content_length` param with `"... [truncated]"` marker
-- User-Agent spoofing to avoid bot detection in fetch operations
+- `advanced_fetch()` is the central function for all fetch operations
 
 ## Adding New Endpoints
 
 Follow this pattern from existing endpoints:
-1. Add cache key combining relevant params
+1. Add cache key combining relevant params (including stealth options)
 2. Check cache first, return if hit
-3. Make async HTTP calls with proper error handling
-4. Cache successful results before returning
-5. Wrap errors in `HTTPException` with appropriate status codes
+3. Use `advanced_fetch()` for URL fetching with stealth support
+4. Make async HTTP calls with proper error handling
+5. Cache successful results before returning
+6. Wrap errors in `HTTPException` with appropriate status codes
+
+## Stealth Mode Usage (FREE)
+
+```python
+# In endpoint, use advanced_fetch:
+fetch_result = await advanced_fetch(
+    url=url,
+    stealth_mode="high",      # off, low, medium, high
+    auto_bypass=True          # Auto-escalate stealth levels if blocked
+)
+html = fetch_result["html"]
+protection_info = fetch_result["protection_info"]  # Bot detection results
+```

@@ -1,6 +1,8 @@
 # SearXNG Search API for LLMs
 
-A production-ready FastAPI wrapper for SearXNG that provides LLM-friendly search and web content extraction capabilities.
+A FastAPI wrapper for SearXNG that provides LLM-friendly search and web content extraction capabilities.
+
+**🔗 Live API:** `https://websearch.miyami.tech`
 
 ## 🚀 Features
 
@@ -11,48 +13,34 @@ A production-ready FastAPI wrapper for SearXNG that provides LLM-friendly search
 - **🎯 Search & Fetch**: Automatically search and fetch full content from top N results
 - **🧠 Semantic Reranking**: AI-powered reranking for better search relevance (FlashRank)
 - **💾 Smart Caching**: Built-in caching for faster repeated queries (DiskCache)
-- **🔬 Deep Research**: Multi-query parallel research with compiled markdown reports - ENHANCED!
+- **🔬 Deep Research**: Multi-query parallel research with compiled markdown reports
+- **🛡️ Stealth Mode**: FREE anti-bot bypass (no API keys needed)
 - **⚡ Fast & Async**: Built with FastAPI and async/await
 - **🤖 LLM Optimized**: Clean JSON/Markdown responses perfect for LLM consumption
 
-## 📁 Project Structure
-
-```
-miyami_search_api/
-├── search_api/          # FastAPI application
-│   ├── main.py         # API endpoints
-│   ├── requirements.txt
-│   └── README.md
-├── searxng/            # SearXNG (cloned during Docker build)
-├── Dockerfile          # Multi-service Docker container
-├── fly.toml           # Fly.io configuration
-├── start.sh           # Startup script for both services
-├── searxng_settings.yml # SearXNG configuration
-└── DEPLOYMENT.md      # Deployment guide
-```
-
 ## 🛠️ API Endpoints
 
-### 1. `/search-api` - Web Search ⭐ ENHANCED WITH TIME FILTERS
-Search the web using multiple engines and get structured results with time-based filtering.
+### 1. `/search-api` - Web Search
+
+Search the web using multiple engines and get structured results.
 
 **Parameters:**
 - `query` (required) - Search query
 - `categories` (optional) - Search categories (default: general)
 - `language` (optional) - Language code (default: en)
-- `time_range` (optional) - **NEW!** Filter by recency: `day`, `week`, `month`, `year`
-- `rerank` (optional) - **NEW!** Set to `true` to enable AI semantic reranking
+- `time_range` (optional) - Filter by recency: `day`, `week`, `month`, `year`
+- `rerank` (optional) - Set to `true` to enable AI semantic reranking
 
 **Examples:**
 ```bash
 # Basic search
-curl "https://your-app.onrender.com/search-api?query=weather&categories=general"
+curl "https://websearch.miyami.tech/search-api?query=weather&categories=general"
 
 # Recent news (past 24 hours)
-curl "https://your-app.onrender.com/search-api?query=AI+news&time_range=day"
+curl "https://websearch.miyami.tech/search-api?query=AI+news&time_range=day"
 
-# Recent tutorials (past week)
-curl "https://your-app.onrender.com/search-api?query=python+tutorials&time_range=week"
+# With AI reranking
+curl "https://websearch.miyami.tech/search-api?query=python+tutorials&rerank=true"
 ```
 
 **Response:**
@@ -74,32 +62,37 @@ curl "https://your-app.onrender.com/search-api?query=python+tutorials&time_range
 }
 ```
 
-### 2. `/fetch` - Content Extraction ⭐ ENHANCED
+---
+
+### 2. `/fetch` - Content Extraction
+
 Extract clean, readable content from any webpage with **Firecrawl-like quality**.
 
-**New Features:**
+**Features:**
 - 🎯 **Trafilatura extraction** - Better accuracy than basic parsers
-- 📝 **Markdown output** - Get structured markdown like Firecrawl
+- 📝 **Markdown output** - Get structured markdown
 - 📊 **Rich metadata** - Authors, dates, site names automatically extracted
-- ⚡ **Still fast** - No browser overhead, pure parsing speed
-
-**Example (Markdown output):**
-```bash
-curl "https://your-app.onrender.com/fetch?url=https://example.com&format=markdown"
-```
-
-**Example (Better text extraction):**
-```bash
-curl "https://your-app.onrender.com/fetch?url=https://example.com&extraction_mode=trafilatura"
-```
+- 🛡️ **Stealth Mode** (FREE) - Anti-bot bypass with User-Agent rotation
+- 🔓 **Auto-Bypass** (FREE) - Automatically escalate stealth levels if blocked
 
 **Parameters:**
 - `url` (required) - URL to fetch
 - `format` - Output format: `text`, `markdown`, or `html` (default: text)
-- `extraction_mode` - Engine: `trafilatura` (best quality) or `readability` (faster)
+- `extraction_mode` - Engine: `trafilatura` (best) or `readability` (faster)
 - `include_links` - Include extracted links (default: true)
 - `include_images` - Include images (default: true)
 - `max_content_length` - Max content length (default: 100000)
+- `stealth_mode` - Anti-bot bypass: `off`, `low`, `medium`, `high`
+- `auto_bypass` - Auto-escalate stealth levels if blocked
+
+**Examples:**
+```bash
+# Basic fetch with markdown output
+curl "https://websearch.miyami.tech/fetch?url=https://example.com&format=markdown"
+
+# With stealth mode for protected sites
+curl "https://websearch.miyami.tech/fetch?url=https://protected-site.com&stealth_mode=high&auto_bypass=true"
+```
 
 **Response:**
 ```json
@@ -107,13 +100,12 @@ curl "https://your-app.onrender.com/fetch?url=https://example.com&extraction_mod
   "success": true,
   "url": "https://example.com",
   "status_code": 200,
+  "fetch_method": "stealth_medium",
   "metadata": {
     "title": "Example Article",
     "author": "John Doe",
     "date": "2024-01-15",
-    "sitename": "Example Site",
-    "description": "Article description",
-    "language": "en"
+    "sitename": "Example Site"
   },
   "content": "# Example Article\n\nClean markdown content...",
   "stats": {
@@ -121,36 +113,37 @@ curl "https://your-app.onrender.com/fetch?url=https://example.com&extraction_mod
     "word_count": 890,
     "extraction_mode": "trafilatura",
     "format": "markdown"
-  },
-  "headings": [...],
-  "links": [...],
-  "images": [...]
+  }
 }
 ```
 
-### 3. `/search-and-fetch` - Search & Auto-Fetch Content ⭐ ENHANCED WITH TIME FILTERS
-**The most powerful endpoint!** Searches and automatically fetches full content with **Trafilatura quality**.
+---
+
+### 3. `/search-and-fetch` - Search & Auto-Fetch Content
+
+**The most powerful endpoint!** Searches and automatically fetches full content from top N results.
+
+**Parameters:**
+- `query` (required) - Search query
+- `num_results` (optional) - Number of results to fetch (1-5, default: 3)
+- `format` (optional) - Output format: text, markdown, html (default: markdown)
+- `categories` (optional) - Search categories (default: general)
+- `time_range` (optional) - Filter by recency: `day`, `week`, `month`, `year`
+- `rerank` (optional) - Enable AI semantic reranking
+- `stealth_mode` (optional) - Anti-bot bypass: `off`, `low`, `medium`, `high`
+- `auto_bypass` (optional) - Auto-escalate stealth levels if blocked
 
 **Examples:**
 ```bash
-# Basic search and fetch
-curl "https://your-app.onrender.com/search-and-fetch?query=python+tutorials&num_results=3&format=markdown"
+# Search and fetch top 3 results
+curl "https://websearch.miyami.tech/search-and-fetch?query=python+tutorials&num_results=3&format=markdown"
 
-# Recent AI news articles (past 24 hours)
-curl "https://your-app.onrender.com/search-and-fetch?query=AI+breakthroughs&num_results=5&time_range=day&format=markdown"
+# Recent AI news with full content
+curl "https://websearch.miyami.tech/search-and-fetch?query=AI+news&time_range=day&num_results=5"
 
-# Recent tutorials (past week)
-curl "https://your-app.onrender.com/search-and-fetch?query=web+development&num_results=3&time_range=week"
+# With stealth mode
+curl "https://websearch.miyami.tech/search-and-fetch?query=web+scraping&stealth_mode=high&auto_bypass=true"
 ```
-
-**What it does:**
-- ✅ Searches for your query (with optional time filter)
-- ✅ Gets top N results (default: 3, max: 5)
-- ✅ Automatically fetches full content from each URL (parallel)
-- ✅ Uses **Trafilatura** for Firecrawl-quality extraction
-- ✅ Supports markdown, text, or HTML output
-- ✅ Returns both search snippets AND full webpage content
-- ✅ Handles errors gracefully if a page can't be fetched
 
 **Response:**
 ```json
@@ -160,57 +153,50 @@ curl "https://your-app.onrender.com/search-and-fetch?query=web+development&num_r
   "num_results_found": 3,
   "successful_fetches": 2,
   "failed_fetches": 1,
+  "fetch_options": {
+    "stealth_mode": "off",
+    "auto_bypass": false
+  },
   "results": [
     {
       "search_result": {
-        "title": "Python Tutorial - W3Schools",
+        "title": "Python Tutorial",
         "url": "https://example.com",
-        "snippet": "Learn Python...",
-        "engine": "google"
+        "snippet": "Learn Python..."
       },
       "fetch_status": "success",
       "fetched_content": {
         "title": "Python Tutorial",
-        "content": "Full clean article text here...",
-        "headings": [
-          {"level": "h1", "text": "Introduction to Python"}
-        ],
-        "content_length": 12500
+        "content": "Full article content...",
+        "word_count": 890
       }
     }
-  ],
-  "suggestions": ["python tutorial for beginners"]
+  ]
 }
 ```
 
-**Parameters:**
-- `query` (required) - Search query
-- `num_results` (optional) - Number of results to fetch (1-5, default: 3)
-- `format` (optional) - Output format: text, markdown, html (default: markdown)
-- `categories` (optional) - Search categories (default: general)
-- `language` (optional) - Language code (default: en)
-- `time_range` (optional) - **NEW!** Filter by recency: `day`, `week`, `month`, `year`
-- `max_content_length` (optional) - Max content per page (default: 100000)
-- `rerank` (optional) - **NEW!** Set to `true` to enable AI semantic reranking
+---
 
-### 4. `/deep-research` - Multi-Query Research Agent ⭐ ENHANCED!
-Perform comprehensive research across multiple queries in parallel and compile results into a unified report.
+### 4. `/deep-research` - Multi-Query Research
+
+Perform comprehensive research across multiple queries in parallel.
+
+**Parameters:**
+- `queries` (required) - Comma-separated list of queries (max 10)
+- `breadth` (optional) - Results per query (1-5, default: 3)
+- `time_range` (optional) - Filter by recency
+- `max_content_length` (optional) - Max content per result (default: 30000)
+- `stealth_mode` (optional) - Anti-bot bypass
+- `auto_bypass` (optional) - Auto-escalate stealth levels
 
 **Examples:**
 ```bash
-# Research multiple topics at once
-curl "https://your-app.onrender.com/deep-research?queries=AI+trends+2024,machine+learning+basics,ChatGPT+use+cases&breadth=2"
+# Research multiple topics
+curl "https://websearch.miyami.tech/deep-research?queries=AI+trends,machine+learning,GPT&breadth=2"
 
 # With time filter
-curl "https://your-app.onrender.com/deep-research?queries=python+news,javascript+updates&breadth=3&time_range=month"
+curl "https://websearch.miyami.tech/deep-research?queries=python+news,javascript+updates&time_range=month"
 ```
-
-**Parameters:**
-- `queries` (required) - Comma-separated list of research queries (max 10)
-- `breadth` (optional) - Number of results to fetch per query (1-5, default: 3)
-- `time_range` (optional) - Filter by recency: `day`, `week`, `month`, `year`
-- `max_content_length` (optional) - Max content length per result (default: 30000)
-- `include_suggestions` (optional) - Include search suggestions (default: true)
 
 **Response:**
 ```json
@@ -218,42 +204,45 @@ curl "https://your-app.onrender.com/deep-research?queries=python+news,javascript
   "research_summary": {
     "total_queries": 3,
     "successful_queries": 3,
-    "failed_queries": 0,
     "total_results_found": 6,
-    "total_successful_fetches": 6,
-    "time_range_filter": null,
-    "breadth_per_query": 2
+    "total_successful_fetches": 6
   },
-  "queries": ["AI trends 2024", "machine learning basics", "ChatGPT use cases"],
-  "query_results": [
-    {
-      "query": "AI trends 2024",
-      "status": "success",
-      "num_results": 2,
-      "successful_fetches": 2,
-      "results": [...],
-      "suggestions": []
-    }
-  ],
-  "compiled_report": "# Deep Research Report\n\n**Queries Researched:** 3\n...",
-  "all_suggestions": []
+  "queries": ["AI trends", "machine learning", "GPT"],
+  "query_results": [...],
+  "compiled_report": "# Deep Research Report\n\n..."
 }
 ```
 
-**Key Features:**
-- ✅ Process multiple queries in parallel for speed
-- ✅ AI reranking enabled by default for quality
-- ✅ Compiled markdown report with proper formatting
-- ✅ Results cached for 30 minutes
-- ✅ Full content extraction with metadata (author, date, sitename)
+---
 
 ### 5. `/health` - Health Check
+
 ```bash
-curl https://your-app.onrender.com/health
+curl "https://websearch.miyami.tech/health"
 ```
 
 ### 6. `/docs` - Interactive API Documentation
-Visit `https://your-app.onrender.com/docs` for Swagger UI
+
+Visit `https://websearch.miyami.tech/docs` for Swagger UI
+
+---
+
+## 🛡️ Stealth Mode (FREE)
+
+The stealth mode helps bypass bot detection without any API keys:
+
+| Level | Description |
+|-------|-------------|
+| `off` | Standard fetch |
+| `low` | Basic User-Agent rotation |
+| `medium` | UA + header randomization |
+| `high` | UA + headers + TLS fingerprint (requires `curl_cffi`) |
+
+**Auto-bypass:** Set `auto_bypass=true` to automatically escalate stealth levels if blocked.
+
+**Detected protections:** Cloudflare, reCAPTCHA, hCaptcha, DataDome, Akamai, PerimeterX, Imperva
+
+---
 
 ## 💻 Local Development
 
@@ -270,6 +259,7 @@ Access at: `http://localhost:8080`
 1. **Start SearXNG**:
 ```bash
 cd searxng
+export PYTHONPATH="$PWD:$PYTHONPATH"
 python3 -m searx.webapp
 ```
 
@@ -277,352 +267,94 @@ python3 -m searx.webapp
 ```bash
 cd search_api
 pip install -r requirements.txt
-python main.py
+uvicorn main:app --reload --port 8001
 ```
 
 Access FastAPI at: `http://localhost:8001`
 
-## 🤖 How to Use with AI
+---
 
-### 🔗 Your Live API URL
-Replace `your-app-name` with your actual Render app name:
-```
-https://miyami-websearch-tool.onrender.com
-```
+## 🤖 Usage with AI Agents
 
-### 🛠️ Three Main Tools for AI Agents
+### Python Example
 
-#### **Tool 1: Web Search** (`/search-api`)
-Search the internet and get relevant results.
-
-**When to use:** When AI needs current information, facts, news, or general web search.
-
-**MCP Tool Definition:**
-```json
-{
-  "name": "web_search",
-  "description": "Search the web using multiple search engines (DuckDuckGo, Google, Bing, Brave, Wikipedia). Returns current information from the internet with optional time-range filtering.",
-  "inputSchema": {
-    "type": "object",
-    "properties": {
-      "query": {
-        "type": "string",
-        "description": "The search query"
-      },
-      "categories": {
-        "type": "string",
-        "description": "Search categories: general, news, images, videos (default: general)"
-      },
-      "time_range": {
-        "type": "string",
-        "enum": ["day", "week", "month", "year"],
-        "description": "Filter results by recency: day (past 24h), week (past week), month (past month), year (past year)"
-      }
-    },
-    "required": ["query"]
-  }
-}
-```
-
-**Example Usage:**
-```bash
-# Search for current information
-curl "https://miyami-websearch-tool.onrender.com/search-api?query=latest+AI+news"
-
-# Search for recent news (past 24 hours)
-curl "https://miyami-websearch-tool.onrender.com/search-api?query=AI+breakthroughs&time_range=day"
-
-# Search for recent tutorials (past week)
-curl "https://miyami-websearch-tool.onrender.com/search-api?query=python+tutorials&time_range=week&categories=general"
-```
-
-**Python Implementation:**
 ```python
 import httpx
 
-async def web_search(query: str, categories: str = "general", time_range: str = None):
-    """Search the web for current information with optional time filter"""
+BASE_URL = "https://websearch.miyami.tech"
+
+async def search(query: str, time_range: str = None):
+    """Search the web"""
     async with httpx.AsyncClient(timeout=30.0) as client:
-        params = {"query": query, "categories": categories}
+        params = {"query": query}
         if time_range:
             params["time_range"] = time_range
-        response = await client.get(
-            "https://miyami-websearch-tool.onrender.com/search-api",
-            params=params
-        )
+        response = await client.get(f"{BASE_URL}/search-api", params=params)
         return response.json()
 
-# Usage - Get recent AI news from past 24 hours
-results = await web_search("AI news", time_range="day")
-print(f"Found {results['number_of_results']} recent results")
-for result in results['results'][:5]:
-    print(f"- {result['title']}: {result['url']}")
-```
-
----
-
-#### **Tool 2: Fetch & Extract Content** (`/fetch`)
-Fetch any webpage and extract clean, readable content.
-
-**When to use:** When AI needs to read full articles, documentation, or webpage content.
-
-**MCP Tool Definition:**
-```json
-{
-  "name": "fetch_webpage",
-  "description": "Fetch and extract clean content from any webpage. Returns the main article text, headings, links, and images without ads or navigation clutter.",
-  "inputSchema": {
-    "type": "object",
-    "properties": {
-      "url": {
-        "type": "string",
-        "description": "The URL to fetch and extract content from"
-      },
-      "include_links": {
-        "type": "boolean",
-        "description": "Include extracted links (default: true)"
-      }
-    },
-    "required": ["url"]
-  }
-}
-```
-
-**Example Usage:**
-```bash
-# Fetch and clean webpage content
-curl "https://miyami-websearch-tool.onrender.com/fetch?url=https://example.com/article"
-
-# Fetch with links
-curl "https://miyami-websearch-tool.onrender.com/fetch?url=https://example.com&include_links=true"
-```
-
-**Python Implementation:**
-```python
-import httpx
-
-async def fetch_webpage(url: str, include_links: bool = True):
-    """Fetch and extract clean content from a webpage"""
+async def fetch(url: str, stealth_mode: str = "off"):
+    """Fetch webpage content"""
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
-            "https://miyami-websearch-tool.onrender.com/fetch",
-            params={"url": url, "include_links": include_links}
+            f"{BASE_URL}/fetch",
+            params={"url": url, "format": "markdown", "stealth_mode": stealth_mode}
         )
         return response.json()
 
-# Usage
-content = await fetch_webpage("https://example.com/article")
-print(f"Title: {content['metadata']['title']}")
-print(f"Content: {content['content'][:500]}...")
-```
-
----
-
-#### **Tool 3: Search & Auto-Fetch** (`/search-and-fetch`) ⭐ **RECOMMENDED**
-Search and automatically fetch full content from top N results in one request.
-
-**When to use:** When AI needs comprehensive research - combines search + fetch for maximum efficiency.
-
-**MCP Tool Definition:**
-```json
-{
-  "name": "search_and_fetch",
-  "description": "Search the web and automatically fetch full content from top N results. Perfect for research tasks - gets both search snippets and full article content in one request. Supports time-range filtering for recent content.",
-  "inputSchema": {
-    "type": "object",
-    "properties": {
-      "query": {
-        "type": "string",
-        "description": "The search query"
-      },
-      "num_results": {
-        "type": "integer",
-        "description": "Number of results to fetch full content from (1-5, default: 3)"
-      },
-      "categories": {
-        "type": "string",
-        "description": "Search categories: general, news, images, videos (default: general)"
-      },
-      "time_range": {
-        "type": "string",
-        "enum": ["day", "week", "month", "year"],
-        "description": "Filter results by recency: day (past 24h), week (past week), month (past month), year (past year)"
-      }
-    },
-    "required": ["query"]
-  }
-}
-```
-
-**Example Usage:**
-```bash
-# Search and fetch top 3 results
-curl "https://miyami-websearch-tool.onrender.com/search-and-fetch?query=python+tutorials&num_results=3"
-
-# Get recent AI news articles (past 24 hours) with full content
-curl "https://miyami-websearch-tool.onrender.com/search-and-fetch?query=AI+breakthroughs&time_range=day&num_results=5&format=markdown"
-
-# Research recent developments (past week)
-curl "https://miyami-websearch-tool.onrender.com/search-and-fetch?query=quantum+computing&time_range=week&num_results=3"
-```
-
-**Python Implementation:**
-```python
-import httpx
-
-async def search_and_fetch(query: str, num_results: int = 3, categories: str = "general", time_range: str = None):
-    """Search and fetch full content from top results with optional time filter"""
+async def search_and_fetch(query: str, num_results: int = 3):
+    """Search and fetch full content"""
     async with httpx.AsyncClient(timeout=60.0) as client:
-        params = {"query": query, "num_results": num_results, "categories": categories}
-        if time_range:
-            params["time_range"] = time_range
         response = await client.get(
-            "https://miyami-websearch-tool.onrender.com/search-and-fetch",
-            params=params
+            f"{BASE_URL}/search-and-fetch",
+            params={"query": query, "num_results": num_results, "format": "markdown"}
         )
         return response.json()
-
-# Usage - Get recent AI news with full article content
-results = await search_and_fetch("AI breakthroughs", num_results=5, time_range="day")
-print(f"Found {results['num_results_found']} results")
-print(f"Successfully fetched: {results['successful_fetches']}")
-for item in results['results']:
-    if item['fetch_status'] == 'success':
-        print(f"\n{item['search_result']['title']}")
-        print(f"Content: {item['fetched_content']['content'][:500]}...")
 ```
 
----
+### MCP Tool Definitions
 
-### 🎯 Complete AI Workflow Example
-
-```python
-import httpx
-
-async def ai_research_assistant(topic: str):
-    """
-    AI research workflow:
-    1. Search for topic
-    2. Fetch top results
-    3. Extract and summarize content
-    """
-    base_url = "https://miyami-websearch-tool.onrender.com"
-    
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        # Step 1: Search the web
-        search_response = await client.get(
-            f"{base_url}/search-api",
-            params={"query": topic, "categories": "general"}
-        )
-        search_data = search_response.json()
-        
-        print(f"Found {search_data['number_of_results']} results for '{topic}'")
-        
-        # Step 2: Fetch content from top 3 results
-        articles = []
-        for result in search_data['results'][:3]:
-            try:
-                fetch_response = await client.get(
-                    f"{base_url}/fetch",
-                    params={"url": result['url'], "include_links": False}
-                )
-                article = fetch_response.json()
-                articles.append({
-                    "title": article['metadata']['title'],
-                    "url": result['url'],
-                    "content": article['content'][:1000]  # First 1000 chars
-                })
-            except:
-                continue
-        
-        return {
-            "search_results": search_data['results'][:5],
-            "detailed_articles": articles
-        }
-
-# Usage
-research = await ai_research_assistant("quantum computing breakthroughs")
-```
-
----
-
-#### **Tool 4: Deep Research** (`/deep-research`) ⭐ **NEW**
-Recursive research agent that explores a topic in depth.
-
-**When to use:** When AI needs to perform a deep dive, literature review, or comprehensive investigation.
-
-**MCP Tool Definition:**
 ```json
-{
-  "name": "deep_research",
-  "description": "Perform deep recursive research on a topic. Searches, reads, extracts links, and recursively searches deeper to build a comprehensive report.",
-  "inputSchema": {
-    "type": "object",
-    "properties": {
-      "query": {
-        "type": "string",
-        "description": "The research topic"
+[
+  {
+    "name": "web_search",
+    "description": "Search the web using multiple search engines",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {"type": "string", "description": "Search query"},
+        "time_range": {"type": "string", "enum": ["day", "week", "month", "year"]}
       },
-      "depth": {
-        "type": "integer",
-        "description": "Recursion depth (1-2, default: 1)"
-      },
-      "breadth": {
-        "type": "integer",
-        "description": "Number of results per level (2-5, default: 3)"
-      }
-    },
-    "required": ["query"]
-  }
-}
-```
-
-### 🤖 Example with OpenAI Function Calling
-
-```python
-import openai
-import httpx
-
-tools = [
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "Search the web for current information using multiple search engines",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query"}
-                },
-                "required": ["query"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "fetch_webpage",
-            "description": "Fetch and extract clean content from a webpage",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "URL to fetch"}
-                },
-                "required": ["url"]
-            }
-        }
+      "required": ["query"]
     }
+  },
+  {
+    "name": "fetch_webpage",
+    "description": "Fetch and extract clean content from a webpage",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {"type": "string", "description": "URL to fetch"},
+        "stealth_mode": {"type": "string", "enum": ["off", "low", "medium", "high"]}
+      },
+      "required": ["url"]
+    }
+  },
+  {
+    "name": "search_and_fetch",
+    "description": "Search and fetch full content from top results",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {"type": "string", "description": "Search query"},
+        "num_results": {"type": "integer", "description": "Number of results (1-5)"}
+      },
+      "required": ["query"]
+    }
+  }
 ]
-
-async def execute_function(name: str, arguments: dict):
-    base_url = "https://miyami-websearch-tool.onrender.com"
-    async with httpx.AsyncClient() as client:
-        if name == "web_search":
-            response = await client.get(f"{base_url}/search-api", params=arguments)
-        elif name == "fetch_webpage":
-            response = await client.get(f"{base_url}/fetch", params=arguments)
-        return response.json()
 ```
+
+---
 
 ## 📊 Architecture
 
@@ -637,74 +369,24 @@ async def execute_function(name: str, arguments: dict):
 │   FastAPI (Port 8080)   │
 │  - /search-api          │
 │  - /fetch               │
-│  - /health              │
+│  - /search-and-fetch    │
+│  - /deep-research       │
 └──────┬──────────────────┘
        │ HTTP (internal)
        ↓
 ┌─────────────────────────┐
 │  SearXNG (Port 8888)    │
-│  - Multiple engines     │
-│  - Result aggregation   │
+│  - DuckDuckGo, Google   │
+│  - Bing, Brave, etc.    │
 └─────────────────────────┘
 ```
 
-## ⚙️ Configuration
-
-### Environment Variables
-- `PORT`: API port (default: 8080)
-- `SEARXNG_DEBUG`: Debug mode (0 or 1)
-- `SEARXNG_SECRET`: Secret key for SearXNG
-- `SEARXNG_BIND_ADDRESS`: SearXNG bind address
-
-### SearXNG Settings
-Edit `searxng_settings.yml` to configure:
-- Search engines
-- Request timeouts
-- UI settings
-- Plugins
-
-## 📈 Monitoring
-
-View logs and metrics on Render Dashboard:
-- Real-time logs with search & filtering
-- CPU, Memory, and Request metrics
-- Deployment history and events
-
-## 🔒 Security Notes
-
-- SearXNG runs on localhost only (127.0.0.1:8888)
-- Only FastAPI is exposed to the internet
-- No data is logged or stored
-- Privacy-focused search (via SearXNG)
-
-
-Perfect for LLM search tools with moderate usage!
+---
 
 ## 📝 License
 
-This project uses:
 - SearXNG: AGPL-3.0 License
 - FastAPI: MIT License
-
-## 🤝 Contributing
-
-Feel free to:
-- Report issues
-- Suggest features
-- Submit pull requests
-
-## 📚 Resources
-
-- [SearXNG Documentation](https://docs.searxng.org/)
-- [FastAPI Documentation](https://fastapi.tiangolo.com/)
-
-## 🎯 Use Cases
-
-- LLM web search tools
-- AI assistants with internet access
-- Automated research tools
-- Content aggregation
-- Privacy-focused search API
 
 ---
 
