@@ -169,7 +169,8 @@ async def root():
             "/search-api": "Search using SearXNG engines",
             "/fetch": "Fetch and clean website content",
             "/search-and-fetch": "Search and auto-fetch content from top N results",
-            "/deep-research": "Recursive research agent for comprehensive analysis"
+            "/deep-research": "Recursive research agent for comprehensive analysis",
+            "/crawl-site": "Crawl entire websites and extract content from multiple pages"
         }
     }
 
@@ -1034,6 +1035,185 @@ def _generate_compiled_report(queries: List[str], results: List[dict]) -> str:
             report_lines.append("")
     
     return "\n".join(report_lines)
+
+@app.get("/crawl-site")
+async def crawl_site(
+    start_url: str = Query(..., description="Starting URL to crawl"),
+    max_pages: int = Query(50, description="Maximum number of pages to crawl (1-200)", ge=1, le=200),
+    max_depth: int = Query(2, description="Maximum crawl depth (0-5)", ge=0, le=5),
+    format: str = Query("markdown", description="Output format: text, markdown, or html"),
+    include_links: bool = Query(True, description="Include extracted links"),
+    include_images: bool = Query(True, description="Include extracted images"),
+    url_patterns: Optional[str] = Query(None, description="Comma-separated regex patterns to include URLs (e.g., '/blog/,/docs/')"),
+    exclude_patterns: Optional[str] = Query(None, description="Comma-separated regex patterns to exclude URLs"),
+    stealth_mode: str = Query("off", description="Stealth mode: off, low, medium, high (applies to all requests)"),
+    obey_robots: bool = Query(True, description="Obey robots.txt rules (set to False to bypass)"),
+):
+    """
+    Crawl an entire website and extract content from multiple pages.
+    
+    This endpoint uses Scrapy to perform site-wide crawling:
+    - Starts from a given URL
+    - Follows internal links up to max_depth
+    - Extracts content using Trafilatura (same as /fetch)
+    - Returns all discovered pages with their content
+    
+    Features:
+    - Depth control: Limit how many link-hops from start_url
+    - URL filtering: Include/exclude specific URL patterns
+    - Polite crawling: Respects robots.txt and rate limits
+    - Stealth mode: Anti-bot bypass for all requests
+    
+    Use Cases:
+    - Crawl documentation sites (e.g., docs.python.org)
+    - Extract all blog posts from a blog
+    - Build knowledge bases from websites
+    - Archive entire sections of websites
+    
+    Example: /crawl-site?start_url=https://example.com/blog&max_pages=20&max_depth=2&url_patterns=/blog/
+    
+    Note: This is a long-running operation. For 50+ pages, it may take several minutes.
+    """
+    from urllib.parse import urlparse
+    
+    # Validate URL
+    parsed = urlparse(start_url)
+    if not parsed.scheme or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="Invalid URL format")
+    
+    # Validate stealth_mode
+    valid_stealth_modes = ["off", "low", "medium", "high"]
+    if stealth_mode.lower() not in valid_stealth_modes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid stealth_mode. Must be one of: {', '.join(valid_stealth_modes)}"
+        )
+    
+    # Parse URL patterns
+    url_pattern_list = None
+    if url_patterns:
+        url_pattern_list = [p.strip() for p in url_patterns.split(",") if p.strip()]
+    
+    exclude_pattern_list = None
+    if exclude_patterns:
+        exclude_pattern_list = [p.strip() for p in exclude_patterns.split(",") if p.strip()]
+    
+    # Check cache
+    cache_key = f"crawl:{start_url}:{max_pages}:{max_depth}:{format}:{url_patterns}:{exclude_patterns}:{stealth_mode}:{obey_robots}"
+    cached_result = cache.get(cache_key)
+    if cached_result:
+        return JSONResponse(content=cached_result)
+    
+    try:
+        # Import spider
+        from scrapy_crawler import SiteCrawlerSpider
+        import subprocess
+        import json as json_lib
+        import os as os_lib
+        import uuid
+        
+        # Create temp file for results (use a fixed path for debugging)
+        results_filename = f"/tmp/scrapy_results_{uuid.uuid4().hex}.json"
+        
+        # Build scrapy command - simplified approach using -o flag
+        cmd = [
+            'scrapy', 'runspider',
+            os.path.join(os.path.dirname(__file__), 'scrapy_crawler.py'),
+            '-a', f'start_url={start_url}',
+            '-a', f'max_pages={max_pages}',
+            '-a', f'max_depth={max_depth}',
+            '-a', f'format={format}',
+            '-a', f'include_links={include_links}',
+            '-a', f'include_images={include_images}',
+            '-a', f'stealth_mode={stealth_mode}',
+            '-o', results_filename,  # Output file
+            '-s', 'LOG_LEVEL=INFO',
+            '-s', f'ROBOTSTXT_OBEY={str(obey_robots)}',
+            '-s', 'CONCURRENT_REQUESTS=8',
+            '-s', 'DOWNLOAD_DELAY=1',
+            '-s', 'AUTOTHROTTLE_ENABLED=True',
+        ]
+        
+        # Add stealth middleware if enabled
+        if stealth_mode != "off":
+            middleware_path = os.path.join(os.path.dirname(__file__), 'stealth_middleware.py')
+            cmd.extend([
+                '-s', 'DOWNLOADER_MIDDLEWARES_BASE={\'scrapy.downloadermiddlewares.httpauth.HttpAuthMiddleware\': 300}',
+                '-s', 'DOWNLOADER_MIDDLEWARES={\'stealth_middleware.StealthDownloaderMiddleware\': 585}',
+                '-s', f'STEALTH_MODE={stealth_mode}',
+            ])
+        
+        if url_pattern_list:
+            cmd.extend(['-a', f'url_patterns={",".join(url_pattern_list)}'])
+        if exclude_pattern_list:
+            cmd.extend(['-a', f'exclude_patterns={",".join(exclude_pattern_list)}'])
+        
+        # Run Scrapy in subprocess to avoid reactor conflicts
+        process = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5 minute timeout
+            cwd=os.path.dirname(__file__)
+        )
+        
+        # Debug: log the command and output
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"Scrapy command: {' '.join(cmd)}")
+        logger.info(f"Scrapy return code: {process.returncode}")
+        logger.info(f"Scrapy stdout: {process.stdout[:500]}")
+        logger.info(f"Scrapy stderr: {process.stderr[:500]}")
+        logger.info(f"Results file: {results_filename}")
+        logger.info(f"File exists: {os_lib.path.exists(results_filename)}")
+        
+        # Check for errors
+        if process.returncode != 0:
+            raise Exception(f"Scrapy failed with code {process.returncode}: {process.stderr}")
+        
+        # Check if results file exists
+        if not os_lib.path.exists(results_filename):
+            raise Exception(f"Scrapy did not create results file at {results_filename}. Stdout: {process.stdout[:200]}")
+        
+        # Read results
+        try:
+            with open(results_filename, 'r') as f:
+                content = f.read()
+                if not content or content.strip() == '':
+                    raise Exception("Scrapy results file is empty")
+                results = json_lib.loads(content)
+        except json_lib.JSONDecodeError as e:
+            raise Exception(f"Invalid JSON from Scrapy: {e}")
+        
+        # Clean up temp files
+        os_lib.unlink(results_filename)
+        
+        # Compile response
+        response_data = {
+            "crawl_summary": {
+                "start_url": start_url,
+                "pages_crawled": len(results),
+                "max_pages_requested": max_pages,
+                "max_depth": max_depth,
+                "format": format,
+                "stealth_mode": stealth_mode,
+            },
+            "pages": results,
+            "total_words": sum(r.get("word_count", 0) for r in results),
+        }
+        
+        # Cache result (30 minutes)
+        cache.set(cache_key, response_data, expire=1800)
+        
+        return JSONResponse(content=response_data)
+        
+    except ImportError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Scrapy dependencies not installed. Run: pip install scrapy crochet. Error: {str(e)}"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Crawl failed: {str(e)}")
 
 @app.get("/health")
 @app.head("/health")
