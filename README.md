@@ -14,6 +14,7 @@ A FastAPI wrapper for SearXNG that provides LLM-friendly search and web content 
 - **🧠 Semantic Reranking**: AI-powered reranking for better search relevance (FlashRank)
 - **💾 Smart Caching**: Built-in caching for faster repeated queries (DiskCache)
 - **🔬 Deep Research**: Multi-query parallel research with compiled markdown reports
+- **🕷️ Site Crawler**: Recursive website crawling with Scrapy integration
 - **🛡️ Stealth Mode**: FREE anti-bot bypass (no API keys needed)
 - **⚡ Fast & Async**: Built with FastAPI and async/await
 - **🤖 LLM Optimized**: Clean JSON/Markdown responses perfect for LLM consumption
@@ -215,13 +216,100 @@ curl "https://websearch.miyami.tech/deep-research?queries=python+news,javascript
 
 ---
 
-### 5. `/health` - Health Check
+### 5. `/crawl-site` - Website Crawler
+
+Recursively crawl an entire website and extract content from multiple pages using Scrapy.
+
+**Features:**
+- 🕷️ **Scrapy-powered** - Industrial-strength web crawling
+- 🎯 **Depth control** - Limit crawl depth (0-5 levels)
+- 📊 **Page limits** - Control max pages (1-200)
+- 🔍 **URL filtering** - Include/exclude patterns with regex
+- 🛡️ **Stealth mode** - Anti-bot bypass for protected sites
+- 🤖 **Robots.txt** - Respect or bypass robots.txt rules
+- 📝 **Content extraction** - Uses Trafilatura for clean content
+
+**Parameters:**
+- `start_url` (required) - Starting URL to crawl
+- `max_pages` (optional) - Maximum pages to crawl (1-200, default: 50)
+- `max_depth` (optional) - Maximum crawl depth (0-5, default: 2)
+- `format` (optional) - Output format: `text`, `markdown`, `html` (default: markdown)
+- `include_links` (optional) - Include extracted links (default: true)
+- `include_images` (optional) - Include images (default: true)
+- `url_patterns` (optional) - Comma-separated regex patterns to include (e.g., `/blog/,/docs/`)
+- `exclude_patterns` (optional) - Comma-separated regex patterns to exclude
+- `stealth_mode` (optional) - Anti-bot bypass: `off`, `low`, `medium`, `high`
+- `obey_robots` (optional) - Respect robots.txt (default: true)
+
+**Examples:**
+```bash
+# Basic site crawl
+curl "https://websearch.miyami.tech/crawl-site?start_url=https://example.com&max_pages=10"
+
+# Crawl with depth limit and URL filtering
+curl "https://websearch.miyami.tech/crawl-site?start_url=https://docs.example.com&max_depth=3&url_patterns=/api/,/guides/"
+
+# Bypass robots.txt for protected sites
+curl "https://websearch.miyami.tech/crawl-site?start_url=https://site.com&max_pages=5&obey_robots=false"
+
+# Crawl specific sections only
+curl "https://websearch.miyami.tech/crawl-site?start_url=https://blog.example.com&url_patterns=/2024/,/tech/&exclude_patterns=/archive/"
+```
+
+**Response:**
+```json
+{
+  "crawl_summary": {
+    "start_url": "https://example.com",
+    "pages_crawled": 10,
+    "max_pages_requested": 10,
+    "max_depth": 2,
+    "format": "markdown",
+    "stealth_mode": "off"
+  },
+  "pages": [
+    {
+      "url": "https://example.com/page1",
+      "status_code": 200,
+      "depth": 0,
+      "metadata": {
+        "title": "Page Title",
+        "author": "John Doe",
+        "date": "2024-01-15",
+        "sitename": "Example Site"
+      },
+      "content": "# Page Title\n\nClean markdown content...",
+      "word_count": 890,
+      "format": "markdown",
+      "links": ["https://example.com/page2"],
+      "images": ["https://example.com/image.jpg"]
+    }
+  ],
+  "total_words": 8900
+}
+```
+
+**Use Cases:**
+- 📚 Documentation crawling
+- 📰 Blog archiving
+- 🔍 Site auditing
+- 📊 Content analysis
+- 🗃️ Knowledge base extraction
+
+**Limitations:**
+- JavaScript-heavy sites (React/Vue SPAs) may have limited content
+- Use `/fetch` endpoint for better single-page extraction on JS sites
+- For protected sites, combine `obey_robots=false` with stealth mode
+
+---
+
+### 6. `/health` - Health Check
 
 ```bash
 curl "https://websearch.miyami.tech/health"
 ```
 
-### 6. `/docs` - Interactive API Documentation
+### 7. `/docs` - Interactive API Documentation
 
 Visit `https://websearch.miyami.tech/docs` for Swagger UI
 
@@ -272,6 +360,11 @@ uvicorn main:app --reload --port 8001
 
 Access FastAPI at: `http://localhost:8001`
 
+**Note:** The `/crawl-site` endpoint requires Scrapy dependencies. Make sure you've installed all requirements:
+```bash
+pip install scrapy>=2.11.0 itemadapter>=0.8.0
+```
+
 ---
 
 ## 🤖 Usage with AI Agents
@@ -307,6 +400,20 @@ async def search_and_fetch(query: str, num_results: int = 3):
         response = await client.get(
             f"{BASE_URL}/search-and-fetch",
             params={"query": query, "num_results": num_results, "format": "markdown"}
+        )
+        return response.json()
+
+async def crawl_site(start_url: str, max_pages: int = 10, max_depth: int = 2):
+    """Crawl an entire website"""
+    async with httpx.AsyncClient(timeout=300.0) as client:
+        response = await client.get(
+            f"{BASE_URL}/crawl-site",
+            params={
+                "start_url": start_url,
+                "max_pages": max_pages,
+                "max_depth": max_depth,
+                "format": "markdown"
+            }
         )
         return response.json()
 ```
@@ -349,6 +456,21 @@ async def search_and_fetch(query: str, num_results: int = 3):
         "num_results": {"type": "integer", "description": "Number of results (1-5)"}
       },
       "required": ["query"]
+    }
+  },
+  {
+    "name": "crawl_site",
+    "description": "Recursively crawl an entire website and extract content from multiple pages",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "start_url": {"type": "string", "description": "Starting URL to crawl"},
+        "max_pages": {"type": "integer", "description": "Maximum pages to crawl (1-200)"},
+        "max_depth": {"type": "integer", "description": "Maximum crawl depth (0-5)"},
+        "url_patterns": {"type": "string", "description": "Comma-separated regex patterns to include"},
+        "obey_robots": {"type": "boolean", "description": "Respect robots.txt rules"}
+      },
+      "required": ["start_url"]
     }
   }
 ]
