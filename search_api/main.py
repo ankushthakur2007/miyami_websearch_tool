@@ -1153,7 +1153,7 @@ async def crawl_site(
             cmd,
             capture_output=True,
             text=True,
-            timeout=300,  # 5 minute timeout
+            timeout=900,  # 15 minute timeout for heavier crawls
             cwd=os.path.dirname(__file__)
         )
         
