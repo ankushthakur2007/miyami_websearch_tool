@@ -1135,11 +1135,10 @@ async def crawl_site(
         ]
         
         # Add stealth middleware if enabled
+        # Note: Stealth mode is passed to spider but middleware integration requires proper Scrapy project setup
+        # For now, stealth_mode is used as a flag for the spider to adjust behavior
         if stealth_mode != "off":
-            middleware_path = os.path.join(os.path.dirname(__file__), 'stealth_middleware.py')
             cmd.extend([
-                '-s', 'DOWNLOADER_MIDDLEWARES_BASE={\'scrapy.downloadermiddlewares.httpauth.HttpAuthMiddleware\': 300}',
-                '-s', 'DOWNLOADER_MIDDLEWARES={\'stealth_middleware.StealthDownloaderMiddleware\': 585}',
                 '-s', f'STEALTH_MODE={stealth_mode}',
             ])
         
