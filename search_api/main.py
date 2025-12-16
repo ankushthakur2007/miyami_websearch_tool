@@ -1980,6 +1980,151 @@ def extract_video_id(url_or_id: str) -> Optional[str]:
     return None
 
 
+async def fetch_transcript_ytdlp(video_id: str, lang: Optional[str] = None) -> dict:
+    """
+    Fallback transcript fetcher using yt-dlp.
+    Better anti-bot handling, works from datacenter IPs.
+    Returns dict with 'transcript' (list of segments), 'language', and 'available_langs'.
+    """
+    import subprocess
+    import json
+    import tempfile
+    import os
+    
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    
+    # First, get available subtitles
+    try:
+        result = subprocess.run(
+            ["yt-dlp", "--list-subs", "--skip-download", "-J", url],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        if result.returncode == 0:
+            info = json.loads(result.stdout)
+            subtitles = info.get("subtitles", {})
+            auto_captions = info.get("automatic_captions", {})
+            
+            available_langs = []
+            for code in subtitles.keys():
+                available_langs.append({"code": code, "is_generated": False})
+            for code in auto_captions.keys():
+                if code not in subtitles:
+                    available_langs.append({"code": code, "is_generated": True})
+            
+            if not available_langs:
+                raise Exception("No subtitles available")
+    except subprocess.TimeoutExpired:
+        raise Exception("Timeout fetching subtitle info")
+    except json.JSONDecodeError:
+        raise Exception("Failed to parse video info")
+    
+    # Determine which language to fetch
+    target_lang = lang
+    is_auto = False
+    
+    if target_lang:
+        # Check if requested language exists
+        if target_lang not in subtitles and target_lang not in auto_captions:
+            # Try to find a close match
+            for code in list(subtitles.keys()) + list(auto_captions.keys()):
+                if code.startswith(target_lang) or target_lang.startswith(code.split('-')[0]):
+                    target_lang = code
+                    break
+    else:
+        # Auto-detect: prefer manual over auto-generated
+        if subtitles:
+            target_lang = list(subtitles.keys())[0]
+        elif auto_captions:
+            target_lang = list(auto_captions.keys())[0]
+            is_auto = True
+    
+    if not target_lang:
+        raise Exception("No suitable subtitle track found")
+    
+    # Download the subtitle
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sub_file = os.path.join(tmpdir, "sub")
+        
+        # Build yt-dlp command
+        cmd = [
+            "yt-dlp",
+            "--skip-download",
+            "--write-sub" if target_lang in subtitles else "--write-auto-sub",
+            "--sub-lang", target_lang,
+            "--sub-format", "json3",
+            "--convert-subs", "json3",
+            "-o", sub_file,
+            url
+        ]
+        
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            raise Exception("Timeout downloading subtitles")
+        
+        # Find the subtitle file
+        sub_files = [f for f in os.listdir(tmpdir) if f.endswith('.json3')]
+        if not sub_files:
+            # Try vtt format as fallback
+            cmd[cmd.index("json3")] = "vtt"
+            cmd[cmd.index("json3")] = "vtt"
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            sub_files = [f for f in os.listdir(tmpdir) if '.vtt' in f or '.json' in f]
+        
+        if not sub_files:
+            raise Exception(f"Failed to download subtitles: {result.stderr}")
+        
+        sub_path = os.path.join(tmpdir, sub_files[0])
+        
+        with open(sub_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Parse based on format
+        transcript = []
+        if sub_path.endswith('.json3'):
+            try:
+                data = json.loads(content)
+                events = data.get('events', [])
+                for event in events:
+                    if 'segs' in event:
+                        text = ''.join(seg.get('utf8', '') for seg in event['segs']).strip()
+                        if text:
+                            transcript.append({
+                                'start': event.get('tStartMs', 0) / 1000.0,
+                                'duration': (event.get('dDurationMs', 0)) / 1000.0,
+                                'text': text
+                            })
+            except json.JSONDecodeError:
+                raise Exception("Failed to parse subtitle file")
+        else:
+            # Parse VTT format
+            import re
+            pattern = r'(\d{2}:\d{2}:\d{2}\.\d{3}) --> (\d{2}:\d{2}:\d{2}\.\d{3})\n(.+?)(?=\n\n|$)'
+            matches = re.findall(pattern, content, re.DOTALL)
+            for start_time, end_time, text in matches:
+                def time_to_seconds(t):
+                    parts = t.replace(',', '.').split(':')
+                    return float(parts[0])*3600 + float(parts[1])*60 + float(parts[2])
+                start = time_to_seconds(start_time)
+                end = time_to_seconds(end_time)
+                clean_text = re.sub(r'<[^>]+>', '', text).strip()
+                if clean_text:
+                    transcript.append({
+                        'start': start,
+                        'duration': end - start,
+                        'text': clean_text
+                    })
+        
+        return {
+            'transcript': transcript,
+            'language': target_lang,
+            'is_generated': is_auto or target_lang in auto_captions,
+            'available_langs': available_langs
+        }
+
+
 @app.get("/yt-transcript")
 async def youtube_transcript(
     video: str = Query(..., description="YouTube video URL or 11-character video ID"),
@@ -2168,26 +2313,119 @@ async def youtube_transcript(
     except HTTPException:
         raise
     except Exception as e:
-        err_str = str(e).lower()
-        if "no transcript" in err_str or "could not retrieve" in err_str:
-            raise HTTPException(
-                status_code=404,
-                detail="No transcript found for this video in the requested language."
+        # youtube-transcript-api failed, try yt-dlp fallback
+        try:
+            ytdlp_result = await asyncio.get_event_loop().run_in_executor(
+                None, 
+                lambda: fetch_transcript_ytdlp(video_id, lang)
             )
-        if "disabled" in err_str:
+            
+            if list_langs:
+                result = {
+                    "video_id": video_id,
+                    "available_transcripts": [
+                        {
+                            "language_code": l["code"],
+                            "language": l["code"],
+                            "is_generated": l["is_generated"],
+                            "is_translatable": False
+                        } for l in ytdlp_result["available_langs"]
+                    ],
+                    "source": "yt-dlp"
+                }
+                cache.set(cache_key, result, expire=3600)
+                return JSONResponse(content=result)
+            
+            transcript = ytdlp_result["transcript"]
+            actual_language = ytdlp_result["language"]
+            
+            # Time slicing
+            if start is not None or end is not None:
+                sliced = []
+                for entry in transcript:
+                    t = entry.get("start", 0.0)
+                    if (start is None or t >= start) and (end is None or t <= end):
+                        sliced.append(entry)
+                transcript = sliced
+            
+            # Format output
+            fmt = format.lower()
+            if fmt == "text":
+                formatted_output = "\n".join(entry["text"] for entry in transcript)
+            elif fmt == "json":
+                import json
+                formatted_output = json.dumps(transcript, indent=2)
+            elif fmt == "srt":
+                srt_lines = []
+                for i, entry in enumerate(transcript, 1):
+                    start_time = entry["start"]
+                    end_time = start_time + entry.get("duration", 0)
+                    def format_srt_time(seconds):
+                        h = int(seconds // 3600)
+                        m = int((seconds % 3600) // 60)
+                        s = int(seconds % 60)
+                        ms = int((seconds % 1) * 1000)
+                        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+                    srt_lines.append(f"{i}")
+                    srt_lines.append(f"{format_srt_time(start_time)} --> {format_srt_time(end_time)}")
+                    srt_lines.append(entry["text"])
+                    srt_lines.append("")
+                formatted_output = "\n".join(srt_lines)
+            else:
+                formatted_output = str(transcript)
+            
+            # Calculate stats
+            total_duration = 0
+            word_count = 0
+            for entry in transcript:
+                total_duration = max(total_duration, entry.get("start", 0) + entry.get("duration", 0))
+                word_count += len(entry.get("text", "").split())
+            
+            result = {
+                "success": True,
+                "video_id": video_id,
+                "video_url": f"https://www.youtube.com/watch?v={video_id}",
+                "format": fmt,
+                "language": actual_language,
+                "translated_to": None,  # yt-dlp doesn't support translation
+                "time_range": {
+                    "start": start,
+                    "end": end
+                } if start or end else None,
+                "stats": {
+                    "segment_count": len(transcript),
+                    "word_count": word_count,
+                    "duration_seconds": round(total_duration, 2)
+                },
+                "transcript": formatted_output,
+                "source": "yt-dlp"  # Indicate fallback was used
+            }
+            
+            cache.set(cache_key, result, expire=3600)
+            return JSONResponse(content=result)
+            
+        except Exception as ytdlp_error:
+            # Both methods failed
+            err_str = str(e).lower()
+            if "no transcript" in err_str or "could not retrieve" in err_str or "no subtitles" in str(ytdlp_error).lower():
+                raise HTTPException(
+                    status_code=404,
+                    detail="No transcript found for this video in the requested language."
+                )
+            if "disabled" in err_str:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Transcripts are disabled for this video."
+                )
+            if "unavailable" in err_str or "video is unavailable" in err_str:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Video unavailable or does not exist."
+                )
             raise HTTPException(
-                status_code=403,
-                detail="Transcripts are disabled for this video."
+                status_code=500,
+                detail=f"Failed to fetch transcript. Primary: {str(e)}. Fallback: {str(ytdlp_error)}"
             )
-        if "unavailable" in err_str or "video is unavailable" in err_str:
-            raise HTTPException(
-                status_code=404,
-                detail="Video unavailable or does not exist."
-            )
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch transcript: {str(e)}"
-        )
 
 
 if __name__ == "__main__":

@@ -20,3 +20,4 @@ itemadapter>=0.8.0  # For Scrapy item handling
 
 # YouTube transcript extraction
 youtube-transcript-api>=1.0  # Fetch YouTube video transcripts
+yt-dlp>=2024.1.0  # Fallback for transcript extraction (better anti-bot)
