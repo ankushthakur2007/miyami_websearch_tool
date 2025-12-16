@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 import httpx
 from bs4 import BeautifulSoup
 from readability import Document
@@ -161,8 +161,728 @@ app = FastAPI(
 
 SEARXNG_URL = "http://127.0.0.1:8888"
 
-@app.get("/")
+# HTML GUI Template
+GUI_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Miyami Search API</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            min-height: 100vh;
+            color: #e4e4e4;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        header {
+            text-align: center;
+            padding: 40px 20px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 20px;
+            margin-bottom: 30px;
+            backdrop-filter: blur(10px);
+        }
+        
+        header h1 {
+            font-size: 2.5rem;
+            background: linear-gradient(90deg, #00d4ff, #7b2cbf, #e040fb);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 10px;
+        }
+        
+        header p {
+            color: #a0a0a0;
+            font-size: 1.1rem;
+        }
+        
+        .tools-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 25px;
+            margin-bottom: 30px;
+        }
+        
+        .tool-card {
+            background: rgba(255,255,255,0.08);
+            border-radius: 16px;
+            padding: 25px;
+            border: 1px solid rgba(255,255,255,0.1);
+            transition: all 0.3s ease;
+        }
+        
+        .tool-card:hover {
+            transform: translateY(-5px);
+            border-color: rgba(0,212,255,0.4);
+            box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+        }
+        
+        .tool-card h3 {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1.3rem;
+            margin-bottom: 15px;
+            color: #00d4ff;
+        }
+        
+        .tool-card h3 .icon {
+            font-size: 1.5rem;
+        }
+        
+        .tool-card .description {
+            color: #a0a0a0;
+            font-size: 0.9rem;
+            margin-bottom: 20px;
+            line-height: 1.5;
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        .form-group label {
+            display: block;
+            font-size: 0.85rem;
+            color: #b0b0b0;
+            margin-bottom: 6px;
+        }
+        
+        .form-group input, .form-group select, .form-group textarea {
+            width: 100%;
+            padding: 12px 15px;
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 10px;
+            background: rgba(0,0,0,0.3);
+            color: #fff;
+            font-size: 0.95rem;
+            transition: all 0.2s ease;
+        }
+        
+        .form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+            outline: none;
+            border-color: #00d4ff;
+            box-shadow: 0 0 0 3px rgba(0,212,255,0.15);
+        }
+        
+        .form-group input::placeholder {
+            color: #666;
+        }
+        
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+        
+        .btn {
+            width: 100%;
+            padding: 14px 20px;
+            border: none;
+            border-radius: 10px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #00d4ff 0%, #7b2cbf 100%);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            transform: scale(1.02);
+            box-shadow: 0 10px 30px rgba(0,212,255,0.3);
+        }
+        
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .checkbox-group input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            accent-color: #00d4ff;
+        }
+        
+        .checkbox-group label {
+            margin-bottom: 0;
+            cursor: pointer;
+        }
+        
+        .result-section {
+            background: rgba(255,255,255,0.05);
+            border-radius: 16px;
+            padding: 25px;
+            margin-top: 30px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .result-section h2 {
+            font-size: 1.4rem;
+            margin-bottom: 20px;
+            color: #00d4ff;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .result-box {
+            background: rgba(0,0,0,0.4);
+            border-radius: 12px;
+            padding: 20px;
+            max-height: 500px;
+            overflow-y: auto;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.85rem;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        
+        .result-box.loading {
+            text-align: center;
+            color: #00d4ff;
+        }
+        
+        .result-box .error {
+            color: #ff6b6b;
+        }
+        
+        .result-box .success {
+            color: #51cf66;
+        }
+        
+        .loading-spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            border-top-color: #00d4ff;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .quick-links {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin-top: 30px;
+            flex-wrap: wrap;
+        }
+        
+        .quick-links a {
+            color: #00d4ff;
+            text-decoration: none;
+            padding: 10px 20px;
+            border: 1px solid rgba(0,212,255,0.3);
+            border-radius: 8px;
+            transition: all 0.2s ease;
+            font-size: 0.9rem;
+        }
+        
+        .quick-links a:hover {
+            background: rgba(0,212,255,0.1);
+            border-color: #00d4ff;
+        }
+        
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+        
+        .stat-item {
+            background: rgba(0,0,0,0.3);
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        
+        .stat-item .value {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #00d4ff;
+        }
+        
+        .stat-item .label {
+            font-size: 0.8rem;
+            color: #888;
+            margin-top: 5px;
+        }
+        
+        @media (max-width: 768px) {
+            .tools-grid {
+                grid-template-columns: 1fr;
+            }
+            .form-row {
+                grid-template-columns: 1fr;
+            }
+            header h1 {
+                font-size: 1.8rem;
+            }
+        }
+        
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(255,255,255,0.05);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(0,212,255,0.4);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(0,212,255,0.6);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🔍 Miyami Search API</h1>
+            <p>LLM-Optimized Web Search & Content Extraction Tools</p>
+        </header>
+        
+        <div class="tools-grid">
+            <!-- Search Tool -->
+            <div class="tool-card">
+                <h3><span class="icon">🔎</span> Web Search</h3>
+                <p class="description">Search the web using multiple engines (DuckDuckGo, Google, Bing, Brave, Wikipedia)</p>
+                <form id="searchForm">
+                    <div class="form-group">
+                        <label>Search Query</label>
+                        <input type="text" name="query" placeholder="e.g., latest AI news" required>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Time Range</label>
+                            <select name="time_range">
+                                <option value="">All Time</option>
+                                <option value="day">Past 24 Hours</option>
+                                <option value="week">Past Week</option>
+                                <option value="month">Past Month</option>
+                                <option value="year">Past Year</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Category</label>
+                            <select name="categories">
+                                <option value="general">General</option>
+                                <option value="news">News</option>
+                                <option value="images">Images</option>
+                                <option value="videos">Videos</option>
+                                <option value="science">Science</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group checkbox-group">
+                        <input type="checkbox" name="rerank" id="rerank">
+                        <label for="rerank">AI Reranking (better relevance)</label>
+                    </div>
+                    <button type="submit" class="btn btn-primary">🔍 Search</button>
+                </form>
+            </div>
+            
+            <!-- Fetch Tool -->
+            <div class="tool-card">
+                <h3><span class="icon">📄</span> Fetch Content</h3>
+                <p class="description">Extract clean, readable content from any webpage with optional stealth mode</p>
+                <form id="fetchForm">
+                    <div class="form-group">
+                        <label>URL to Fetch</label>
+                        <input type="url" name="url" placeholder="https://example.com/article" required>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Output Format</label>
+                            <select name="output_format">
+                                <option value="markdown">Markdown</option>
+                                <option value="text">Plain Text</option>
+                                <option value="html">HTML</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Stealth Mode</label>
+                            <select name="stealth_mode">
+                                <option value="off">Off</option>
+                                <option value="low">Low</option>
+                                <option value="medium">Medium</option>
+                                <option value="high">High</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group checkbox-group">
+                        <input type="checkbox" name="auto_bypass" id="auto_bypass">
+                        <label for="auto_bypass">Auto Bypass (escalate if blocked)</label>
+                    </div>
+                    <button type="submit" class="btn btn-primary">📄 Fetch Content</button>
+                </form>
+            </div>
+            
+            <!-- Search & Fetch Tool -->
+            <div class="tool-card">
+                <h3><span class="icon">🔗</span> Search & Fetch</h3>
+                <p class="description">Search and automatically extract content from top results</p>
+                <form id="searchFetchForm">
+                    <div class="form-group">
+                        <label>Search Query</label>
+                        <input type="text" name="query" placeholder="e.g., Python best practices" required>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Fetch Top N</label>
+                            <select name="fetch_top_n">
+                                <option value="3">3 results</option>
+                                <option value="5" selected>5 results</option>
+                                <option value="10">10 results</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Time Range</label>
+                            <select name="time_range">
+                                <option value="">All Time</option>
+                                <option value="day">Past Day</option>
+                                <option value="week">Past Week</option>
+                                <option value="month">Past Month</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary">🔗 Search & Fetch</button>
+                </form>
+            </div>
+            
+            <!-- Deep Research Tool -->
+            <div class="tool-card">
+                <h3><span class="icon">🧠</span> Deep Research</h3>
+                <p class="description">Multi-query research - processes multiple queries in parallel</p>
+                <form id="deepResearchForm">
+                    <div class="form-group">
+                        <label>Research Queries (one per line)</label>
+                        <textarea name="queries" rows="3" placeholder="What is quantum computing?\\nQuantum computing applications\\nQuantum vs classical computing" required></textarea>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Fetch Per Query</label>
+                            <select name="fetch_top_n">
+                                <option value="2">2 results</option>
+                                <option value="3" selected>3 results</option>
+                                <option value="5">5 results</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Max Content (chars)</label>
+                            <input type="number" name="max_content_length" value="5000" min="1000" max="50000">
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary">🧠 Research</button>
+                </form>
+            </div>
+            
+            <!-- Crawl Site Tool -->
+            <div class="tool-card">
+                <h3><span class="icon">🕷️</span> Crawl Website</h3>
+                <p class="description">Recursively crawl websites and extract content from multiple pages</p>
+                <form id="crawlForm">
+                    <div class="form-group">
+                        <label>Website URL</label>
+                        <input type="url" name="url" placeholder="https://example.com" required>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Max Pages</label>
+                            <input type="number" name="max_pages" value="10" min="1" max="100">
+                        </div>
+                        <div class="form-group">
+                            <label>Max Depth</label>
+                            <input type="number" name="max_depth" value="2" min="1" max="5">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Output Format</label>
+                        <select name="output_format">
+                            <option value="markdown">Markdown</option>
+                            <option value="text">Plain Text</option>
+                            <option value="html">HTML</option>
+                        </select>
+                    </div>
+                    <button type="submit" class="btn btn-primary">🕷️ Start Crawl</button>
+                </form>
+            </div>
+            
+            <!-- YouTube Transcript Tool -->
+            <div class="tool-card">
+                <h3><span class="icon">🎬</span> YouTube Transcript</h3>
+                <p class="description">Extract transcripts from YouTube videos with language support</p>
+                <form id="ytTranscriptForm">
+                    <div class="form-group">
+                        <label>YouTube URL or Video ID</label>
+                        <input type="text" name="video" placeholder="https://youtube.com/watch?v=... or video ID" required>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Format</label>
+                            <select name="format">
+                                <option value="text">Plain Text</option>
+                                <option value="json">JSON (with timestamps)</option>
+                                <option value="srt">SRT Subtitles</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Language (optional)</label>
+                            <input type="text" name="lang" placeholder="auto-detect, or: en, es, hi...">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Start Time (sec)</label>
+                            <input type="number" name="start" placeholder="0" min="0">
+                        </div>
+                        <div class="form-group">
+                            <label>End Time (sec)</label>
+                            <input type="number" name="end" placeholder="End" min="0">
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary">🎬 Get Transcript</button>
+                </form>
+            </div>
+        </div>
+        
+        <!-- Results Section -->
+        <div class="result-section" id="resultSection" style="display: none;">
+            <h2>📋 Results</h2>
+            <div class="stats" id="statsSection" style="display: none;"></div>
+            <div class="result-box" id="resultBox"></div>
+        </div>
+        
+        <!-- Quick Links -->
+        <div class="quick-links">
+            <a href="/docs" target="_blank">📚 API Documentation</a>
+            <a href="/health" target="_blank">💚 Health Check</a>
+            <a href="https://github.com/ankushthakur08/miyami_websearch_tool" target="_blank">⭐ GitHub</a>
+        </div>
+    </div>
+    
+    <script>
+        const resultSection = document.getElementById('resultSection');
+        const resultBox = document.getElementById('resultBox');
+        const statsSection = document.getElementById('statsSection');
+        
+        function showLoading(message = 'Processing...') {
+            resultSection.style.display = 'block';
+            statsSection.style.display = 'none';
+            resultBox.innerHTML = '<div class="loading"><span class="loading-spinner"></span> ' + message + '</div>';
+            resultBox.className = 'result-box loading';
+            resultSection.scrollIntoView({ behavior: 'smooth' });
+        }
+        
+        function showResult(data, stats = null) {
+            resultBox.className = 'result-box';
+            
+            if (stats) {
+                statsSection.style.display = 'grid';
+                statsSection.innerHTML = Object.entries(stats).map(([label, value]) => 
+                    `<div class="stat-item"><div class="value">${value}</div><div class="label">${label}</div></div>`
+                ).join('');
+            } else {
+                statsSection.style.display = 'none';
+            }
+            
+            if (typeof data === 'object') {
+                resultBox.innerHTML = '<span class="success">' + JSON.stringify(data, null, 2) + '</span>';
+            } else {
+                resultBox.innerHTML = '<span class="success">' + escapeHtml(data) + '</span>';
+            }
+        }
+        
+        function showError(error) {
+            resultBox.className = 'result-box';
+            statsSection.style.display = 'none';
+            resultBox.innerHTML = '<span class="error">❌ Error: ' + escapeHtml(error) + '</span>';
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        async function submitForm(form, endpoint, buildParams) {
+            const formData = new FormData(form);
+            const params = buildParams(formData);
+            const url = endpoint + '?' + new URLSearchParams(params).toString();
+            
+            try {
+                showLoading('Fetching results...');
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Request failed');
+                }
+                
+                // Extract stats based on endpoint type
+                let stats = null;
+                if (data.total_results !== undefined) {
+                    stats = { 'Results': data.total_results };
+                    if (data.query) stats['Query'] = data.query;
+                }
+                if (data.word_count !== undefined) {
+                    stats = stats || {};
+                    stats['Words'] = data.word_count;
+                }
+                if (data.segment_count !== undefined) {
+                    stats = stats || {};
+                    stats['Segments'] = data.segment_count;
+                    stats['Duration'] = (data.total_duration || 0).toFixed(1) + 's';
+                }
+                if (data.pages_crawled !== undefined) {
+                    stats = { 'Pages': data.pages_crawled, 'Duration': data.crawl_duration };
+                }
+                
+                showResult(data, stats);
+            } catch (error) {
+                showError(error.message);
+            }
+        }
+        
+        // Search Form
+        document.getElementById('searchForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            await submitForm(e.target, '/search-api', (fd) => {
+                const params = { query: fd.get('query') };
+                if (fd.get('time_range')) params.time_range = fd.get('time_range');
+                if (fd.get('categories')) params.categories = fd.get('categories');
+                if (fd.get('rerank')) params.rerank = 'true';
+                return params;
+            });
+        });
+        
+        // Fetch Form
+        document.getElementById('fetchForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            await submitForm(e.target, '/fetch', (fd) => {
+                const params = { 
+                    url: fd.get('url'),
+                    output_format: fd.get('output_format'),
+                    stealth_mode: fd.get('stealth_mode')
+                };
+                if (fd.get('auto_bypass')) params.auto_bypass = 'true';
+                return params;
+            });
+        });
+        
+        // Search & Fetch Form
+        document.getElementById('searchFetchForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            await submitForm(e.target, '/search-and-fetch', (fd) => {
+                const params = { 
+                    query: fd.get('query'),
+                    fetch_top_n: fd.get('fetch_top_n')
+                };
+                if (fd.get('time_range')) params.time_range = fd.get('time_range');
+                return params;
+            });
+        });
+        
+        // Deep Research Form
+        document.getElementById('deepResearchForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            showLoading('Researching multiple queries... This may take a while.');
+            const formData = new FormData(e.target);
+            const queries = formData.get('queries').split('\\n').filter(q => q.trim());
+            const url = '/deep-research?' + new URLSearchParams({
+                queries: queries.join(','),
+                fetch_top_n: formData.get('fetch_top_n'),
+                max_content_length: formData.get('max_content_length')
+            }).toString();
+            
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || 'Request failed');
+                showResult(data, { 'Queries': data.query_count, 'Results': data.total_results });
+            } catch (error) {
+                showError(error.message);
+            }
+        });
+        
+        // Crawl Form
+        document.getElementById('crawlForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            showLoading('Crawling website... This may take several minutes.');
+            await submitForm(e.target, '/crawl-site', (fd) => ({
+                url: fd.get('url'),
+                max_pages: fd.get('max_pages'),
+                max_depth: fd.get('max_depth'),
+                output_format: fd.get('output_format')
+            }));
+        });
+        
+        // YouTube Transcript Form
+        document.getElementById('ytTranscriptForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            await submitForm(e.target, '/yt-transcript', (fd) => {
+                const params = { 
+                    video: fd.get('video'),
+                    format: fd.get('format')
+                };
+                if (fd.get('lang')) params.lang = fd.get('lang');
+                if (fd.get('start')) params.start = fd.get('start');
+                if (fd.get('end')) params.end = fd.get('end');
+                return params;
+            });
+        });
+    </script>
+</body>
+</html>
+"""
+
+@app.get("/", response_class=HTMLResponse)
 async def root():
+    """Serve the interactive GUI for the API"""
+    return GUI_HTML
+
+@app.get("/api")
+async def api_info():
+    """Return API info as JSON (for programmatic access)"""
     return {
         "message": "SearXNG Search API",
         "endpoints": {
@@ -1264,7 +1984,7 @@ def extract_video_id(url_or_id: str) -> Optional[str]:
 async def youtube_transcript(
     video: str = Query(..., description="YouTube video URL or 11-character video ID"),
     format: str = Query("text", description="Output format: text, json, or srt"),
-    lang: Optional[str] = Query(None, description="Preferred language code (e.g., 'en', 'es', 'hi')"),
+    lang: Optional[str] = Query(None, description="Preferred language code (e.g., 'en', 'es', 'hi'). If not specified, auto-detects and fetches first available transcript"),
     translate: Optional[str] = Query(None, description="Translate transcript to target language code"),
     start: Optional[float] = Query(None, description="Start time in seconds to trim transcript"),
     end: Optional[float] = Query(None, description="End time in seconds to trim transcript"),
@@ -1344,31 +2064,52 @@ async def youtube_transcript(
         
         # Fetch transcript
         transcript = None
-        langs_list = [lang] if lang else None
+        actual_language = None  # Track what language we actually got
         
         if translate:
             # Find source transcript, then translate
             transcript_list = ytt_api.list(video_id)
-            if langs_list:
+            if lang:
                 try:
-                    source = transcript_list.find_transcript(langs_list)
+                    source = transcript_list.find_transcript([lang])
+                    actual_language = source.language_code
                 except Exception:
                     available = list(transcript_list)
                     source = available[0] if available else None
                     if not source:
                         raise HTTPException(status_code=404, detail="No transcripts available for this video")
+                    actual_language = source.language_code
             else:
                 available = list(transcript_list)
                 source = available[0] if available else None
                 if not source:
                     raise HTTPException(status_code=404, detail="No transcripts available for this video")
+                actual_language = source.language_code
             
             transcript = source.translate(translate).fetch()
         else:
-            if langs_list:
-                transcript = ytt_api.fetch(video_id, languages=langs_list)
+            # Auto-detect: if no lang specified, get first available transcript
+            if lang:
+                transcript = ytt_api.fetch(video_id, languages=[lang])
+                actual_language = lang
             else:
-                transcript = ytt_api.fetch(video_id)
+                # Get whatever is available - try to list and pick the first one
+                try:
+                    transcript_list = ytt_api.list(video_id)
+                    available = list(transcript_list)
+                    if not available:
+                        raise HTTPException(status_code=404, detail="No transcripts available for this video")
+                    # Prefer manual transcripts over auto-generated
+                    manual = [t for t in available if not t.is_generated]
+                    source = manual[0] if manual else available[0]
+                    actual_language = source.language_code
+                    transcript = source.fetch()
+                except HTTPException:
+                    raise
+                except Exception:
+                    # Fallback to default fetch (will try common languages)
+                    transcript = ytt_api.fetch(video_id)
+                    actual_language = "auto"
         
         # Time slicing
         if start is not None or end is not None:
@@ -1407,7 +2148,7 @@ async def youtube_transcript(
             "video_id": video_id,
             "video_url": f"https://www.youtube.com/watch?v={video_id}",
             "format": fmt,
-            "language": lang or "auto",
+            "language": actual_language or "auto",
             "translated_to": translate,
             "time_range": {
                 "start": start,
