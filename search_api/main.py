@@ -755,7 +755,11 @@ GUI_HTML = """
                 const data = await response.json();
                 
                 if (!response.ok) {
-                    throw new Error(data.detail || 'Request failed');
+                    let errorMsg = data.detail || 'Request failed';
+                    if (typeof errorMsg === 'object') {
+                        errorMsg = JSON.stringify(errorMsg, null, 2);
+                    }
+                    throw new Error(errorMsg);
                 }
                 
                 // Extract stats based on endpoint type
@@ -801,7 +805,7 @@ GUI_HTML = """
             await submitForm(e.target, '/fetch', (fd) => {
                 const params = { 
                     url: fd.get('url'),
-                    output_format: fd.get('output_format'),
+                    format: fd.get('output_format'),
                     stealth_mode: fd.get('stealth_mode')
                 };
                 if (fd.get('auto_bypass')) params.auto_bypass = 'true';
@@ -849,10 +853,10 @@ GUI_HTML = """
             e.preventDefault();
             showLoading('Crawling website... This may take several minutes.');
             await submitForm(e.target, '/crawl-site', (fd) => ({
-                url: fd.get('url'),
+                start_url: fd.get('url'),
                 max_pages: fd.get('max_pages'),
                 max_depth: fd.get('max_depth'),
-                output_format: fd.get('output_format')
+                format: fd.get('output_format')
             }));
         });
         
