@@ -15,6 +15,7 @@ A FastAPI wrapper for SearXNG that provides LLM-friendly search and web content 
 - **💾 Smart Caching**: Built-in caching for faster repeated queries (DiskCache)
 - **🔬 Deep Research**: Multi-query parallel research with compiled markdown reports
 - **🕷️ Site Crawler**: Recursive website crawling with Scrapy integration
+- **🎬 YouTube Transcripts**: Fetch video transcripts with language selection and translation
 - **🛡️ Stealth Mode**: FREE anti-bot bypass (no API keys needed)
 - **⚡ Fast & Async**: Built with FastAPI and async/await
 - **🤖 LLM Optimized**: Clean JSON/Markdown responses perfect for LLM consumption
@@ -303,13 +304,89 @@ curl "https://websearch.miyami.tech/crawl-site?start_url=https://blog.example.co
 
 ---
 
-### 6. `/health` - Health Check
+### 6. `/yt-transcript` - YouTube Transcripts
+
+Fetch YouTube video transcripts for LLM consumption.
+
+**Features:**
+- 🎬 **YouTube URL or Video ID** - Accepts any YouTube link format
+- 📝 **Multiple formats** - Text, JSON (with timestamps), or SRT subtitles
+- 🌍 **Language selection** - Choose preferred transcript language
+- 🔄 **Translation** - Translate transcripts to any supported language
+- ⏱️ **Time slicing** - Extract specific portions by timestamp
+- 📊 **Stats included** - Word count, segment count, duration
+
+**Parameters:**
+- `video` (required) - YouTube video URL or 11-character video ID
+- `format` (optional) - Output format: `text`, `json`, `srt` (default: text)
+- `lang` (optional) - Preferred language code (e.g., 'en', 'es', 'hi')
+- `translate` (optional) - Translate to target language code
+- `start` (optional) - Start time in seconds for trimming
+- `end` (optional) - End time in seconds for trimming
+- `list_langs` (optional) - Set to `true` to list available languages
+
+**Examples:**
+```bash
+# Basic transcript (text format)
+curl "https://websearch.miyami.tech/yt-transcript?video=dQw4w9WgXcQ&format=text"
+
+# With full YouTube URL
+curl "https://websearch.miyami.tech/yt-transcript?video=https://youtube.com/watch?v=dQw4w9WgXcQ"
+
+# JSON format with timestamps
+curl "https://websearch.miyami.tech/yt-transcript?video=dQw4w9WgXcQ&format=json"
+
+# SRT subtitle format
+curl "https://websearch.miyami.tech/yt-transcript?video=dQw4w9WgXcQ&format=srt"
+
+# Specific language
+curl "https://websearch.miyami.tech/yt-transcript?video=dQw4w9WgXcQ&lang=en"
+
+# Translate to Spanish
+curl "https://websearch.miyami.tech/yt-transcript?video=dQw4w9WgXcQ&translate=es"
+
+# Time range (60-120 seconds)
+curl "https://websearch.miyami.tech/yt-transcript?video=dQw4w9WgXcQ&start=60&end=120"
+
+# List available languages
+curl "https://websearch.miyami.tech/yt-transcript?video=dQw4w9WgXcQ&list_langs=true"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "video_id": "dQw4w9WgXcQ",
+  "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "format": "text",
+  "language": "auto",
+  "translated_to": null,
+  "time_range": null,
+  "stats": {
+    "segment_count": 61,
+    "word_count": 487,
+    "duration_seconds": 211.32
+  },
+  "transcript": "[♪♪♪]\n♪ We're no strangers to love ♪\n♪ You know the rules and so do I ♪..."
+}
+```
+
+**Use Cases:**
+- 📚 Video content summarization
+- 🔍 Searching within video content
+- 📖 Creating study notes from lectures
+- 🌐 Translating video content
+- ♿ Accessibility improvements
+
+---
+
+### 7. `/health` - Health Check
 
 ```bash
 curl "https://websearch.miyami.tech/health"
 ```
 
-### 7. `/docs` - Interactive API Documentation
+### 8. `/docs` - Interactive API Documentation
 
 Visit `https://websearch.miyami.tech/docs` for Swagger UI
 
@@ -416,6 +493,15 @@ async def crawl_site(start_url: str, max_pages: int = 10, max_depth: int = 2):
             }
         )
         return response.json()
+
+async def get_youtube_transcript(video: str, format: str = "text", translate: str = None):
+    """Get YouTube video transcript"""
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        params = {"video": video, "format": format}
+        if translate:
+            params["translate"] = translate
+        response = await client.get(f"{BASE_URL}/yt-transcript", params=params)
+        return response.json()
 ```
 
 ### MCP Tool Definitions
@@ -471,6 +557,20 @@ async def crawl_site(start_url: str, max_pages: int = 10, max_depth: int = 2):
         "obey_robots": {"type": "boolean", "description": "Respect robots.txt rules"}
       },
       "required": ["start_url"]
+    }
+  },
+  {
+    "name": "youtube_transcript",
+    "description": "Fetch YouTube video transcripts for summarization and analysis",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "video": {"type": "string", "description": "YouTube video URL or 11-character video ID"},
+        "format": {"type": "string", "enum": ["text", "json", "srt"], "description": "Output format"},
+        "lang": {"type": "string", "description": "Preferred language code"},
+        "translate": {"type": "string", "description": "Translate to target language code"}
+      },
+      "required": ["video"]
     }
   }
 ]

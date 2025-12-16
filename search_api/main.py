@@ -170,7 +170,8 @@ async def root():
             "/fetch": "Fetch and clean website content",
             "/search-and-fetch": "Search and auto-fetch content from top N results",
             "/deep-research": "Recursive research agent for comprehensive analysis",
-            "/crawl-site": "Crawl entire websites and extract content from multiple pages"
+            "/crawl-site": "Crawl entire websites and extract content from multiple pages",
+            "/yt-transcript": "Fetch YouTube video transcripts"
         }
     }
 
@@ -1235,6 +1236,218 @@ async def health_check():
 async def root_head():
     """Handle HEAD requests for health checks"""
     return {}
+
+
+# ============== YouTube Transcript Endpoint ==============
+
+# YouTube video ID extraction patterns
+YOUTUBE_ID_REGEXES = [
+    r"(?:v=|/videos/|embed/|shorts/)([\w-]{11})",
+    r"youtu\.be/([\w-]{11})",
+    r"youtube\.com/watch\?.*v=([\w-]{11})",
+    r"^([\w-]{11})$",
+]
+
+def extract_video_id(url_or_id: str) -> Optional[str]:
+    """Extract YouTube video ID from URL or direct ID."""
+    s = url_or_id.strip()
+    for pattern in YOUTUBE_ID_REGEXES:
+        m = re.search(pattern, s)
+        if m:
+            return m.group(1)
+    if re.fullmatch(r"[\w-]{11}", s):
+        return s
+    return None
+
+
+@app.get("/yt-transcript")
+async def youtube_transcript(
+    video: str = Query(..., description="YouTube video URL or 11-character video ID"),
+    format: str = Query("text", description="Output format: text, json, or srt"),
+    lang: Optional[str] = Query(None, description="Preferred language code (e.g., 'en', 'es', 'hi')"),
+    translate: Optional[str] = Query(None, description="Translate transcript to target language code"),
+    start: Optional[float] = Query(None, description="Start time in seconds to trim transcript"),
+    end: Optional[float] = Query(None, description="End time in seconds to trim transcript"),
+    list_langs: bool = Query(False, description="List available transcript languages instead of fetching"),
+):
+    """
+    Fetch YouTube video transcripts for LLM consumption.
+    
+    Features:
+    - Accepts YouTube URL or video ID
+    - Multiple output formats (text, json, srt)
+    - Language selection and translation
+    - Time-range slicing
+    - Lists available languages
+    
+    Examples:
+    - /yt-transcript?video=dQw4w9WgXcQ&format=text
+    - /yt-transcript?video=https://youtube.com/watch?v=dQw4w9WgXcQ&lang=en
+    - /yt-transcript?video=dQw4w9WgXcQ&translate=es
+    - /yt-transcript?video=dQw4w9WgXcQ&start=60&end=120
+    - /yt-transcript?video=dQw4w9WgXcQ&list_langs=true
+    """
+    # Lazy import to avoid loading if not used
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        from youtube_transcript_api.formatters import TextFormatter, JSONFormatter, SRTFormatter
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="youtube-transcript-api not installed. Run: pip install youtube-transcript-api>=1.0"
+        )
+    
+    # Validate format
+    valid_formats = ["text", "json", "srt"]
+    if format.lower() not in valid_formats:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid format. Must be one of: {', '.join(valid_formats)}"
+        )
+    
+    # Extract video ID
+    video_id = extract_video_id(video)
+    if not video_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not extract a valid YouTube video ID. Provide a YouTube URL or 11-character video ID."
+        )
+    
+    # Check cache
+    cache_key = f"yt-transcript:{video_id}:{format}:{lang}:{translate}:{start}:{end}:{list_langs}"
+    cached_result = cache.get(cache_key)
+    if cached_result:
+        return JSONResponse(content=cached_result)
+    
+    try:
+        # Create API instance
+        ytt_api = YouTubeTranscriptApi()
+        
+        # List available languages
+        if list_langs:
+            transcript_list = ytt_api.list(video_id)
+            langs = []
+            for t in transcript_list:
+                langs.append({
+                    "language_code": t.language_code,
+                    "language": t.language,
+                    "is_generated": t.is_generated,
+                    "is_translatable": t.is_translatable
+                })
+            
+            result = {
+                "video_id": video_id,
+                "available_transcripts": langs
+            }
+            cache.set(cache_key, result, expire=3600)  # Cache for 1 hour
+            return JSONResponse(content=result)
+        
+        # Fetch transcript
+        transcript = None
+        langs_list = [lang] if lang else None
+        
+        if translate:
+            # Find source transcript, then translate
+            transcript_list = ytt_api.list(video_id)
+            if langs_list:
+                try:
+                    source = transcript_list.find_transcript(langs_list)
+                except Exception:
+                    available = list(transcript_list)
+                    source = available[0] if available else None
+                    if not source:
+                        raise HTTPException(status_code=404, detail="No transcripts available for this video")
+            else:
+                available = list(transcript_list)
+                source = available[0] if available else None
+                if not source:
+                    raise HTTPException(status_code=404, detail="No transcripts available for this video")
+            
+            transcript = source.translate(translate).fetch()
+        else:
+            if langs_list:
+                transcript = ytt_api.fetch(video_id, languages=langs_list)
+            else:
+                transcript = ytt_api.fetch(video_id)
+        
+        # Time slicing
+        if start is not None or end is not None:
+            raw_data = transcript.to_raw_data()
+            sliced = []
+            for entry in raw_data:
+                t = entry.get("start", 0.0)
+                if (start is None or t >= start) and (end is None or t <= end):
+                    sliced.append(entry)
+            transcript = sliced
+        
+        # Format output
+        fmt = format.lower()
+        if fmt == "text":
+            formatter = TextFormatter()
+            formatted_output = formatter.format_transcript(transcript)
+        elif fmt == "json":
+            formatter = JSONFormatter()
+            formatted_output = formatter.format_transcript(transcript, indent=2)
+        elif fmt == "srt":
+            formatter = SRTFormatter()
+            formatted_output = formatter.format_transcript(transcript)
+        else:
+            formatted_output = str(transcript)
+        
+        # Calculate stats
+        raw_data = transcript.to_raw_data() if hasattr(transcript, 'to_raw_data') else transcript
+        total_duration = 0
+        word_count = 0
+        for entry in raw_data:
+            total_duration = max(total_duration, entry.get("start", 0) + entry.get("duration", 0))
+            word_count += len(entry.get("text", "").split())
+        
+        result = {
+            "success": True,
+            "video_id": video_id,
+            "video_url": f"https://www.youtube.com/watch?v={video_id}",
+            "format": fmt,
+            "language": lang or "auto",
+            "translated_to": translate,
+            "time_range": {
+                "start": start,
+                "end": end
+            } if start or end else None,
+            "stats": {
+                "segment_count": len(raw_data),
+                "word_count": word_count,
+                "duration_seconds": round(total_duration, 2)
+            },
+            "transcript": formatted_output
+        }
+        
+        cache.set(cache_key, result, expire=3600)  # Cache for 1 hour
+        return JSONResponse(content=result)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        err_str = str(e).lower()
+        if "no transcript" in err_str or "could not retrieve" in err_str:
+            raise HTTPException(
+                status_code=404,
+                detail="No transcript found for this video in the requested language."
+            )
+        if "disabled" in err_str:
+            raise HTTPException(
+                status_code=403,
+                detail="Transcripts are disabled for this video."
+            )
+        if "unavailable" in err_str or "video is unavailable" in err_str:
+            raise HTTPException(
+                status_code=404,
+                detail="Video unavailable or does not exist."
+            )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch transcript: {str(e)}"
+        )
+
 
 if __name__ == "__main__":
     import uvicorn

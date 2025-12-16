@@ -17,3 +17,6 @@ curl_cffi>=0.7.0  # TLS fingerprint matching for high stealth mode
 # Scrapy for site-wide crawling
 scrapy>=2.11.0  # Web crawling framework
 itemadapter>=0.8.0  # For Scrapy item handling
+
+# YouTube transcript extraction
+youtube-transcript-api>=1.0  # Fetch YouTube video transcripts
