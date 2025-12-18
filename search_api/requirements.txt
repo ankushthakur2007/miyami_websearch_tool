@@ -12,6 +12,7 @@ diskcache
 
 # Advanced fetch capabilities (stealth mode & JS rendering)
 curl_cffi>=0.7.0  # TLS fingerprint matching for high stealth mode
+brotli>=1.1.0  # Brotli decompression for compressed responses
 # Note: ScrapingBee and Browserless are external services, no pip packages needed
 
 # Scrapy for site-wide crawling

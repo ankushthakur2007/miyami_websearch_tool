@@ -52,6 +52,8 @@ class StealthResponse:
     url: str
     browser_used: str
     stealth_level: str
+    content: bytes = b""  # Raw bytes for decompression handling
+    content_encoding: str = ""  # Content-Encoding header
 
 
 # User-Agent strings for different browsers (updated for 2024-2025)
@@ -281,7 +283,9 @@ class StealthClient:
                 headers=dict(response.headers),
                 url=str(response.url),
                 browser_used=browser_type.value,
-                stealth_level=stealth_level.value
+                stealth_level=stealth_level.value,
+                content=response.content,
+                content_encoding=response.headers.get('content-encoding', '')
             )
     
     async def _fetch_with_curl_cffi(
@@ -313,7 +317,9 @@ class StealthClient:
                 headers=dict(response.headers),
                 url=str(response.url),
                 browser_used=browser_type.value,
-                stealth_level=StealthLevel.HIGH.value
+                stealth_level=StealthLevel.HIGH.value,
+                content=response.content,
+                content_encoding=response.headers.get('content-encoding', '')
             )
     
     async def close(self):

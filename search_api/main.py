@@ -15,9 +15,228 @@ from diskcache import Cache
 from flashrank import Ranker, RerankRequest
 import os
 import json
+import unicodedata
+import gzip
+import zlib
+from io import BytesIO
+
+# Try to import brotli for brotli decompression
+try:
+    import brotli
+    BROTLI_AVAILABLE = True
+except ImportError:
+    BROTLI_AVAILABLE = False
 
 # Import free stealth and bot detection modules (no API keys needed)
 from stealth_client import StealthClient, StealthLevel, stealth_get
+
+
+def decompress_content(raw_bytes: bytes, content_encoding: str = None) -> bytes:
+    """
+    Attempt to decompress the content using various compression algorithms.
+    Returns decompressed bytes or original bytes if decompression fails/not needed.
+    """
+    if not raw_bytes:
+        return raw_bytes
+    
+    # Try to detect compression from magic bytes
+    is_gzip = raw_bytes[:2] == b'\x1f\x8b'
+    is_zlib = raw_bytes[:2] in [b'\x78\x9c', b'\x78\x01', b'\x78\xda']
+    is_brotli = content_encoding and 'br' in content_encoding.lower()
+    
+    # Try gzip first
+    if is_gzip or (content_encoding and 'gzip' in content_encoding.lower()):
+        try:
+            return gzip.decompress(raw_bytes)
+        except Exception:
+            pass
+    
+    # Try deflate/zlib
+    if is_zlib or (content_encoding and 'deflate' in content_encoding.lower()):
+        try:
+            return zlib.decompress(raw_bytes)
+        except Exception:
+            try:
+                # Try raw deflate (no zlib header)
+                return zlib.decompress(raw_bytes, -zlib.MAX_WBITS)
+            except Exception:
+                pass
+    
+    # Try brotli if available
+    if BROTLI_AVAILABLE and (is_brotli or content_encoding):
+        try:
+            return brotli.decompress(raw_bytes)
+        except Exception:
+            pass
+    
+    # If nothing worked, try all decompression methods as fallback
+    for decompress_func in [
+        lambda b: gzip.decompress(b),
+        lambda b: zlib.decompress(b),
+        lambda b: zlib.decompress(b, -zlib.MAX_WBITS),
+    ]:
+        try:
+            return decompress_func(raw_bytes)
+        except Exception:
+            continue
+    
+    if BROTLI_AVAILABLE:
+        try:
+            return brotli.decompress(raw_bytes)
+        except Exception:
+            pass
+    
+    return raw_bytes
+
+
+def decode_content(raw_bytes: bytes, content_type: str = None) -> str:
+    """
+    Try multiple encodings to decode bytes to string.
+    Returns decoded string with best encoding found.
+    """
+    if not raw_bytes:
+        return ""
+    
+    # Try to extract charset from content-type header
+    charset = None
+    if content_type:
+        for part in content_type.split(';'):
+            if 'charset=' in part.lower():
+                charset = part.split('=')[1].strip().strip('"\'')
+                break
+    
+    # Build list of encodings to try
+    encodings_to_try = []
+    if charset:
+        encodings_to_try.append(charset)
+    encodings_to_try.extend(['utf-8', 'utf-8-sig', 'latin-1', 'cp1252', 'iso-8859-1', 'ascii'])
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    encodings_to_try = [x for x in encodings_to_try if not (x.lower() in seen or seen.add(x.lower()))]
+    
+    # Try each encoding
+    for encoding in encodings_to_try:
+        try:
+            decoded = raw_bytes.decode(encoding)
+            # Check if it looks like valid HTML/text
+            if '<html' in decoded.lower() or '<body' in decoded.lower() or '<div' in decoded.lower():
+                return decoded
+            # Still valid, might be non-HTML
+            if decoded and len(decoded) > 10:
+                return decoded
+        except (UnicodeDecodeError, LookupError):
+            continue
+    
+    # Last resort: decode with errors='replace'
+    return raw_bytes.decode('utf-8', errors='replace')
+
+
+def sanitize_content(content: str) -> str:
+    """
+    Remove NULL bytes and invalid control characters from content.
+    Ensures the content is valid for XML/JSON serialization.
+    """
+    if not content:
+        return content
+    
+    # Remove NULL bytes
+    content = content.replace('\x00', '')
+    
+    # Remove other problematic control characters (keep newlines, tabs, carriage returns)
+    # XML 1.0 valid chars: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD]
+    def is_valid_xml_char(c):
+        codepoint = ord(c)
+        return (
+            codepoint == 0x9 or  # Tab
+            codepoint == 0xA or  # Newline
+            codepoint == 0xD or  # Carriage return
+            (0x20 <= codepoint <= 0xD7FF) or
+            (0xE000 <= codepoint <= 0xFFFD) or
+            (0x10000 <= codepoint <= 0x10FFFF)
+        )
+    
+    # Filter out invalid characters
+    sanitized = ''.join(c for c in content if is_valid_xml_char(c))
+    
+    return sanitized
+
+
+def is_valid_html(content: str) -> bool:
+    """Check if content appears to be valid HTML."""
+    if not content or len(content.strip()) < 10:
+        return False
+    
+    lower_content = content[:5000].lower()
+    html_indicators = ['<html', '<head', '<body', '<div', '<p>', '<a ', '<!doctype', '<meta']
+    return any(indicator in lower_content for indicator in html_indicators)
+
+
+async def robust_fetch_content(
+    url: str,
+    headers: dict = None,
+    timeout: float = 30.0,
+    follow_redirects: bool = True
+) -> dict:
+    """
+    Robust content fetching that handles compression and encoding issues.
+    Returns dict with 'html', 'status_code', 'final_url', 'content_type', 'encoding_used'.
+    """
+    import httpx
+    
+    default_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1"
+    }
+    
+    if headers:
+        default_headers.update(headers)
+    
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        follow_redirects=follow_redirects,
+    ) as client:
+        response = await client.get(url, headers=default_headers)
+        response.raise_for_status()
+        
+        # Get raw bytes
+        raw_bytes = response.content
+        
+        # Get headers for content type and encoding
+        content_type = response.headers.get('content-type', '')
+        content_encoding = response.headers.get('content-encoding', '')
+        
+        # Step 1: Try to decompress if needed
+        decompressed_bytes = decompress_content(raw_bytes, content_encoding)
+        
+        # Step 2: Decode to string with multiple encoding attempts
+        html_content = decode_content(decompressed_bytes, content_type)
+        
+        # Step 3: Sanitize the content
+        html_content = sanitize_content(html_content)
+        
+        # Step 4: Validate we got something useful
+        if not is_valid_html(html_content) and len(html_content) < 100:
+            # Try one more time with the raw response.text (httpx might handle it better)
+            try:
+                html_content = sanitize_content(response.text)
+            except Exception:
+                pass
+        
+        return {
+            "html": html_content,
+            "status_code": response.status_code,
+            "final_url": str(response.url),
+            "content_type": content_type,
+            "encoding_used": content_encoding or "none"
+        }
+
+
 from antibot import detect_protection, is_blocked, ProtectionType
 
 # Initialize DiskCache
@@ -50,6 +269,7 @@ async def advanced_fetch(
 ) -> Dict[str, Any]:
     """
     Advanced fetch with stealth mode for anti-bot bypass (FREE - no API keys needed).
+    Includes robust handling of compressed and encoded content.
     
     Args:
         url: URL to fetch
@@ -61,6 +281,26 @@ async def advanced_fetch(
     """
     fetch_method = "standard"
     protection_info = None
+    html = ""
+    status_code = 0
+    final_url = url
+    
+    # Helper function to process raw response bytes
+    def process_response_content(response_content: bytes, response_headers: dict) -> str:
+        """Process raw bytes with decompression and decoding."""
+        content_encoding = response_headers.get('content-encoding', '')
+        content_type = response_headers.get('content-type', '')
+        
+        # Step 1: Decompress if needed
+        decompressed = decompress_content(response_content, content_encoding)
+        
+        # Step 2: Decode with multiple encoding attempts
+        decoded = decode_content(decompressed, content_type)
+        
+        # Step 3: Sanitize to remove invalid characters
+        sanitized = sanitize_content(decoded)
+        
+        return sanitized
     
     # Step 1: Fetch using stealth mode or standard
     if stealth_mode != "off":
@@ -69,18 +309,38 @@ async def advanced_fetch(
             level = StealthLevel(stealth_mode.lower())
             client = get_stealth_client()
             response = await client.get(url, stealth_level=level)
-            html = response.text
+            
+            # Use raw bytes for proper decompression handling
+            if response.content and len(response.content) > 0:
+                html = process_response_content(
+                    response.content,
+                    {"content-encoding": response.content_encoding, "content-type": response.headers.get("content-type", "")}
+                )
+            else:
+                html = sanitize_content(response.text)
+            
+            # Fallback: If content still looks corrupted, try re-processing
+            if not is_valid_html(html) and len(html) > 100:
+                try:
+                    raw_bytes = response.text.encode('latin-1', errors='ignore')
+                    decompressed = decompress_content(raw_bytes, None)
+                    html = decode_content(decompressed, None)
+                    html = sanitize_content(html)
+                except Exception:
+                    pass
+            
             status_code = response.status_code
             final_url = response.url
             fetch_method = f"stealth_{stealth_mode}"
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"Stealth fetch failed: {str(e)}")
     else:
-        # Standard fetch
+        # Standard fetch with raw bytes handling
         async with httpx.AsyncClient(
             timeout=30.0,
             follow_redirects=True,
-            headers={
+        ) as client:
+            response = await client.get(url, headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.9",
@@ -88,11 +348,22 @@ async def advanced_fetch(
                 "DNT": "1",
                 "Connection": "keep-alive",
                 "Upgrade-Insecure-Requests": "1"
-            }
-        ) as client:
-            response = await client.get(url)
+            })
             response.raise_for_status()
-            html = response.text
+            
+            # Process raw bytes with proper decompression and decoding
+            html = process_response_content(
+                response.content,
+                dict(response.headers)
+            )
+            
+            # Fallback to response.text if our processing failed
+            if not is_valid_html(html) or len(html) < 50:
+                try:
+                    html = sanitize_content(response.text)
+                except Exception:
+                    pass
+            
             status_code = response.status_code
             final_url = str(response.url)
     
@@ -114,7 +385,7 @@ async def advanced_fetch(
                 try:
                     client = get_stealth_client()
                     response = await client.get(url, stealth_level=StealthLevel.MEDIUM)
-                    new_html = response.text
+                    new_html = sanitize_content(response.text)
                     new_protection = detect_protection(new_html)
                     
                     if not new_protection.is_blocked:
@@ -132,7 +403,7 @@ async def advanced_fetch(
                 try:
                     client = get_stealth_client()
                     response = await client.get(url, stealth_level=StealthLevel.HIGH)
-                    new_html = response.text
+                    new_html = sanitize_content(response.text)
                     new_protection = detect_protection(new_html)
                     
                     if not new_protection.is_blocked:
@@ -145,6 +416,11 @@ async def advanced_fetch(
                 except:
                     pass
     
+    # Step 3: Final validation - try to extract SOMETHING even if content looks bad
+    if not html or len(html.strip()) < 10:
+        # Last resort: return whatever we have with a warning
+        html = "[Content could not be fully extracted]"
+    
     return {
         "html": html,
         "status_code": status_code,
@@ -152,6 +428,7 @@ async def advanced_fetch(
         "fetch_method": fetch_method,
         "protection_info": protection_info
     }
+
 
 app = FastAPI(
     title="SearXNG Search API",
