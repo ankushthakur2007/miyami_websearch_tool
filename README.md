@@ -304,7 +304,7 @@ curl "https://websearch.miyami.tech/crawl-site?start_url=https://blog.example.co
 
 ---
 
-### 6. `/yt-transcript` - YouTube Transcripts
+### 6. `/yt-transcript` - YouTube Transcripts (Currently work in localhost only)
 
 Fetch YouTube video transcripts for LLM consumption.
 
