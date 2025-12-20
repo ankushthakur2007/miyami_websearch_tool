@@ -2261,7 +2261,7 @@ def extract_video_id(url_or_id: str) -> Optional[str]:
     return None
 
 
-async def fetch_transcript_ytdlp(video_id: str, lang: Optional[str] = None) -> dict:
+def fetch_transcript_ytdlp(video_id: str, lang: Optional[str] = None) -> dict:
     """
     Fallback transcript fetcher using yt-dlp.
     Better anti-bot handling, works from datacenter IPs.
