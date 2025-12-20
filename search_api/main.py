@@ -2271,6 +2271,11 @@ def fetch_transcript_ytdlp(video_id: str, lang: Optional[str] = None) -> dict:
     import json
     import tempfile
     import os
+    import shutil
+    
+    # Check if yt-dlp is available
+    if not shutil.which("yt-dlp"):
+        raise Exception("yt-dlp is not installed or not in PATH")
     
     url = f"https://www.youtube.com/watch?v={video_id}"
     
@@ -2282,24 +2287,32 @@ def fetch_transcript_ytdlp(video_id: str, lang: Optional[str] = None) -> dict:
             text=True,
             timeout=60
         )
-        if result.returncode == 0:
-            info = json.loads(result.stdout)
-            subtitles = info.get("subtitles", {})
-            auto_captions = info.get("automatic_captions", {})
+        
+        # Handle non-zero return code
+        if result.returncode != 0:
+            error_msg = result.stderr.strip() or result.stdout.strip() or "Unknown error"
+            raise Exception(f"yt-dlp failed with code {result.returncode}: {error_msg[:500]}")
+        
+        info = json.loads(result.stdout)
+        subtitles = info.get("subtitles", {})
+        auto_captions = info.get("automatic_captions", {})
+        
+        available_langs = []
+        for code in subtitles.keys():
+            available_langs.append({"code": code, "is_generated": False})
+        for code in auto_captions.keys():
+            if code not in subtitles:
+                available_langs.append({"code": code, "is_generated": True})
+        
+        if not available_langs:
+            raise Exception("No subtitles available for this video")
             
-            available_langs = []
-            for code in subtitles.keys():
-                available_langs.append({"code": code, "is_generated": False})
-            for code in auto_captions.keys():
-                if code not in subtitles:
-                    available_langs.append({"code": code, "is_generated": True})
-            
-            if not available_langs:
-                raise Exception("No subtitles available")
+    except FileNotFoundError:
+        raise Exception("yt-dlp executable not found")
     except subprocess.TimeoutExpired:
-        raise Exception("Timeout fetching subtitle info")
-    except json.JSONDecodeError:
-        raise Exception("Failed to parse video info")
+        raise Exception("Timeout fetching subtitle info from yt-dlp")
+    except json.JSONDecodeError as jde:
+        raise Exception(f"Failed to parse yt-dlp JSON output: {str(jde)}")
     
     # Determine which language to fetch
     target_lang = lang
@@ -2595,6 +2608,9 @@ async def youtube_transcript(
         raise
     except Exception as e:
         # youtube-transcript-api failed, try yt-dlp fallback
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"youtube-transcript-api failed for {video_id}: {str(e)}")
         try:
             ytdlp_result = await asyncio.get_event_loop().run_in_executor(
                 None, 
@@ -2686,12 +2702,16 @@ async def youtube_transcript(
             return JSONResponse(content=result)
             
         except Exception as ytdlp_error:
-            # Both methods failed
+            # Both methods failed - log the yt-dlp error too
+            logger.warning(f"yt-dlp fallback also failed for {video_id}: {str(ytdlp_error)}")
+            
             err_str = str(e).lower()
-            if "no transcript" in err_str or "could not retrieve" in err_str or "no subtitles" in str(ytdlp_error).lower():
+            ytdlp_err_str = str(ytdlp_error).lower()
+            
+            if "no transcript" in err_str or "could not retrieve" in err_str or "no subtitles" in ytdlp_err_str:
                 raise HTTPException(
                     status_code=404,
-                    detail="No transcript found for this video in the requested language."
+                    detail=f"No transcript found for this video. Primary error: {str(e)[:200]}. Fallback error: {str(ytdlp_error)[:200]}"
                 )
             if "disabled" in err_str:
                 raise HTTPException(
@@ -2705,7 +2725,7 @@ async def youtube_transcript(
                 )
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to fetch transcript. Primary: {str(e)}. Fallback: {str(ytdlp_error)}"
+                detail=f"Failed to fetch transcript. Primary: {str(e)[:300]}. Fallback: {str(ytdlp_error)[:300]}"
             )
 
 
