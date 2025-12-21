@@ -2280,9 +2280,18 @@ def fetch_transcript_ytdlp(video_id: str, lang: Optional[str] = None) -> dict:
     url = f"https://www.youtube.com/watch?v={video_id}"
     
     # First, get available subtitles
+    # Use extractor args to bypass YouTube sign-in requirements
     try:
         result = subprocess.run(
-            ["yt-dlp", "--list-subs", "--skip-download", "-J", url],
+            [
+                "yt-dlp",
+                "--extractor-args", "youtube:player_client=ios,web",
+                "--no-check-certificates",
+                "--list-subs", 
+                "--skip-download", 
+                "-J", 
+                url
+            ],
             capture_output=True,
             text=True,
             timeout=60
@@ -2341,9 +2350,11 @@ def fetch_transcript_ytdlp(video_id: str, lang: Optional[str] = None) -> dict:
     with tempfile.TemporaryDirectory() as tmpdir:
         sub_file = os.path.join(tmpdir, "sub")
         
-        # Build yt-dlp command
+        # Build yt-dlp command with bypass options
         cmd = [
             "yt-dlp",
+            "--extractor-args", "youtube:player_client=ios,web",
+            "--no-check-certificates",
             "--skip-download",
             "--write-sub" if target_lang in subtitles else "--write-auto-sub",
             "--sub-lang", target_lang,
