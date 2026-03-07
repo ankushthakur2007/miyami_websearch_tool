@@ -1,0 +1,15 @@
+services:
+  miyami-search:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: miyami-search
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      SEARXNG_BIND_ADDRESS: "127.0.0.1"
+      SEARXNG_PORT: "8888"
+      # Optional: set a fixed secret in production (or provide via .env)
+      # SEARXNG_SECRET: "replace-with-a-strong-random-secret"
+    restart: unless-stopped

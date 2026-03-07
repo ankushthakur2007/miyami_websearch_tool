@@ -22,3 +22,9 @@ itemadapter>=0.8.0  # For Scrapy item handling
 # YouTube transcript extraction
 youtube-transcript-api>=1.0  # Fetch YouTube video transcripts
 yt-dlp>=2024.1.0  # Fallback for transcript extraction (better anti-bot)
+
+# Document extraction (PDF, Word, Excel, PowerPoint, etc.)
+pypdf>=4.0.0  # PDF text extraction
+python-docx>=1.1.0  # Word (.docx) documents
+openpyxl>=3.1.0  # Excel (.xlsx) files
+python-pptx>=0.6.21  # PowerPoint (.pptx) files

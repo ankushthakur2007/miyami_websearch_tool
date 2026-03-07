@@ -19,6 +19,7 @@ A FastAPI wrapper for SearXNG that provides LLM-friendly search and web content 
 - **🛡️ Stealth Mode**: FREE anti-bot bypass (no API keys needed)
 - **⚡ Fast & Async**: Built with FastAPI and async/await
 - **🤖 LLM Optimized**: Clean JSON/Markdown responses perfect for LLM consumption
+- **📄 Auto-Document Fetch**: Automatically extract text from PDF, DOCX, XLSX, PPTX, MD, RTF, CSV files
 
 ## 🛠️ API Endpoints
 
@@ -76,6 +77,7 @@ Extract clean, readable content from any webpage with **Firecrawl-like quality**
 - 📊 **Rich metadata** - Authors, dates, site names automatically extracted
 - 🛡️ **Stealth Mode** (FREE) - Anti-bot bypass with User-Agent rotation
 - 🔓 **Auto-Bypass** (FREE) - Automatically escalate stealth levels if blocked
+- 📄 **Auto-Document Fetch** - Automatically extracts text from PDF, DOCX, XLSX, PPTX, MD, RTF, CSV files
 
 **Parameters:**
 - `url` (required) - URL to fetch
@@ -92,11 +94,14 @@ Extract clean, readable content from any webpage with **Firecrawl-like quality**
 # Basic fetch with markdown output
 curl "https://websearch.miyami.tech/fetch?url=https://example.com&format=markdown"
 
+# Fetch a PDF document (auto-detected)
+curl "https://websearch.miyami.tech/fetch?url=https://example.com/report.pdf&format=markdown"
+
 # With stealth mode for protected sites
 curl "https://websearch.miyami.tech/fetch?url=https://protected-site.com&stealth_mode=high&auto_bypass=true"
 ```
 
-**Response:**
+**Response (Webpage):**
 ```json
 {
   "success": true,
@@ -115,6 +120,22 @@ curl "https://websearch.miyami.tech/fetch?url=https://protected-site.com&stealth
     "word_count": 890,
     "extraction_mode": "trafilatura",
     "format": "markdown"
+  }
+}
+```
+
+**Response (Document):**
+```json
+{
+  "success": true,
+  "url": "https://example.com/report.pdf",
+  "is_document": true,
+  "document_type": "pdf",
+  "content": "Extracted text from PDF...",
+  "stats": {
+    "content_length": 12345,
+    "word_count": 2100,
+    "document_type": "pdf"
   }
 }
 ```

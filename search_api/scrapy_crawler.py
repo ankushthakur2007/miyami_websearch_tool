@@ -7,11 +7,18 @@ import scrapy
 from scrapy.linkextractors import LinkExtractor
 from scrapy.spidermiddlewares.httperror import HttpError
 from twisted.internet.error import DNSLookupError, TimeoutError
-from urllib.parse import urlparse
+from urllib.parse import urlparse, Path
 import trafilatura
 import json
 from typing import Optional, List, Dict, Any
 import re
+
+# Try to import document extractor
+try:
+    from document_extractor import extract_document, is_document_url, get_content_type_mime
+    DOCUMENT_EXTRACTOR_AVAILABLE = True
+except ImportError:
+    DOCUMENT_EXTRACTOR_AVAILABLE = False
 
 
 class SiteCrawlerSpider(scrapy.Spider):
@@ -146,7 +153,43 @@ class SiteCrawlerSpider(scrapy.Spider):
         """Extract content using Trafilatura (same as /fetch endpoint)"""
         try:
             html_content = response.text
-            
+
+            # Check if this is a document file
+            is_document = False
+            document_type = None
+            document_text = ""
+
+            if DOCUMENT_EXTRACTOR_AVAILABLE and response.body:
+                url = response.url
+                content_type = response.headers.get('Content-Type', b'').decode('utf-8', errors='ignore')
+
+                if is_document_url(url) or get_content_type_mime(content_type):
+                    doc_result = extract_document(response.body, content_type, url)
+                    if doc_result.get('success', False):
+                        is_document = True
+                        document_type = doc_result.get('document_type', 'unknown')
+                        document_text = doc_result.get('text', '')
+
+            # If it's a document, return it directly
+            if is_document:
+                content = document_text
+
+                # Get word count
+                word_count = len(content.split())
+
+                return {
+                    "metadata": {
+                        "title": Path(url).stem if url else "Document",
+                        "url": url,
+                        "sitename": Path(url).stem if url else "Document"
+                    },
+                    "content": content,
+                    "word_count": word_count,
+                    "format": self.output_format,
+                    "is_document": True,
+                    "document_type": document_type
+                }
+
             # Extract with Trafilatura
             extracted = trafilatura.extract(
                 html_content,

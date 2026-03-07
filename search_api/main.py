@@ -20,6 +20,13 @@ import gzip
 import zlib
 from io import BytesIO
 
+# Try to import document extraction module
+try:
+    from document_extractor import extract_document, is_document_url, get_content_type_mime
+    DOCUMENT_EXTRACTOR_AVAILABLE = True
+except ImportError:
+    DOCUMENT_EXTRACTOR_AVAILABLE = False
+
 # Try to import brotli for brotli decompression
 try:
     import brotli
@@ -270,38 +277,40 @@ async def advanced_fetch(
     """
     Advanced fetch with stealth mode for anti-bot bypass (FREE - no API keys needed).
     Includes robust handling of compressed and encoded content.
-    
+
     Args:
         url: URL to fetch
         stealth_mode: "off", "low", "medium", or "high"
         auto_bypass: Automatically try higher stealth levels if blocked
-        
+
     Returns:
-        Dict with html, status_code, final_url, fetch_method, protection_info
+        Dict with html, content_bytes, content_type, status_code, final_url, fetch_method, protection_info
     """
     fetch_method = "standard"
     protection_info = None
     html = ""
+    content_bytes = b""
+    content_type = ""
     status_code = 0
     final_url = url
-    
+
     # Helper function to process raw response bytes
     def process_response_content(response_content: bytes, response_headers: dict) -> str:
         """Process raw bytes with decompression and decoding."""
         content_encoding = response_headers.get('content-encoding', '')
-        content_type = response_headers.get('content-type', '')
-        
+        content_type_header = response_headers.get('content-type', '')
+
         # Step 1: Decompress if needed
         decompressed = decompress_content(response_content, content_encoding)
-        
+
         # Step 2: Decode with multiple encoding attempts
-        decoded = decode_content(decompressed, content_type)
-        
+        decoded = decode_content(decompressed, content_type_header)
+
         # Step 3: Sanitize to remove invalid characters
         sanitized = sanitize_content(decoded)
-        
+
         return sanitized
-    
+
     # Step 1: Fetch using stealth mode or standard
     if stealth_mode != "off":
         # Use stealth client (FREE - no API keys needed)
@@ -309,16 +318,20 @@ async def advanced_fetch(
             level = StealthLevel(stealth_mode.lower())
             client = get_stealth_client()
             response = await client.get(url, stealth_level=level)
-            
+
+            # Store raw bytes and content-type for document detection
+            content_bytes = response.content if response.content else b""
+            content_type = response.headers.get("content-type", "")
+
             # Use raw bytes for proper decompression handling
-            if response.content and len(response.content) > 0:
+            if content_bytes and len(content_bytes) > 0:
                 html = process_response_content(
-                    response.content,
-                    {"content-encoding": response.content_encoding, "content-type": response.headers.get("content-type", "")}
+                    content_bytes,
+                    {"content-encoding": response.content_encoding, "content-type": content_type}
                 )
             else:
                 html = sanitize_content(response.text)
-            
+
             # Fallback: If content still looks corrupted, try re-processing
             if not is_valid_html(html) and len(html) > 100:
                 try:
@@ -328,7 +341,7 @@ async def advanced_fetch(
                     html = sanitize_content(html)
                 except Exception:
                     pass
-            
+
             status_code = response.status_code
             final_url = response.url
             fetch_method = f"stealth_{stealth_mode}"
@@ -350,20 +363,24 @@ async def advanced_fetch(
                 "Upgrade-Insecure-Requests": "1"
             })
             response.raise_for_status()
-            
+
+            # Store raw bytes and content-type for document detection
+            content_bytes = response.content
+            content_type = response.headers.get('content-type', '')
+
             # Process raw bytes with proper decompression and decoding
             html = process_response_content(
                 response.content,
                 dict(response.headers)
             )
-            
+
             # Fallback to response.text if our processing failed
             if not is_valid_html(html) or len(html) < 50:
                 try:
                     html = sanitize_content(response.text)
                 except Exception:
                     pass
-            
+
             status_code = response.status_code
             final_url = str(response.url)
     
@@ -423,6 +440,8 @@ async def advanced_fetch(
     
     return {
         "html": html,
+        "content_bytes": content_bytes,
+        "content_type": content_type,
         "status_code": status_code,
         "final_url": final_url,
         "fetch_method": fetch_method,
@@ -1350,7 +1369,23 @@ async def fetch_url(
         status_code = fetch_result["status_code"]
         fetch_method = fetch_result["fetch_method"]
         protection_info = fetch_result["protection_info"]
-        
+        content_bytes = fetch_result.get("content_bytes", b"")
+        content_type = fetch_result.get("content_type", "")
+
+        # Check if this is a document file and extract if so
+        is_document = False
+        document_type = None
+        document_text = ""
+
+        if DOCUMENT_EXTRACTOR_AVAILABLE and content_bytes:
+            # Check by URL extension or content-type
+            if is_document_url(final_url) or get_content_type_mime(content_type):
+                doc_result = extract_document(content_bytes, content_type, final_url)
+                if doc_result.get('success', False):
+                    is_document = True
+                    document_type = doc_result.get('document_type', 'unknown')
+                    document_text = doc_result.get('text', '')
+
         # Initialize result structure
         result = {
             "success": True,
@@ -1358,13 +1393,24 @@ async def fetch_url(
             "status_code": status_code,
             "fetch_method": fetch_method,
         }
-        
+
+        # Add document info if extracted
+        if is_document:
+            result["document_type"] = document_type
+            result["is_document"] = True
+            result["content"] = document_text
+        else:
+            result["is_document"] = False
+
         # Add protection info if detected
         if protection_info:
             result["protection_info"] = protection_info
-        
-        # Use trafilatura for better extraction (Firecrawl-like)
-        if extraction_mode == "trafilatura":
+
+        # Skip HTML extraction for documents
+        if is_document:
+            # For documents, we already have content extracted
+            pass
+        elif extraction_mode == "trafilatura":
             # Extract with trafilatura (best quality)
             extracted = trafilatura.extract(
                 html_content,
@@ -1428,7 +1474,7 @@ async def fetch_url(
             else:
                 # Fallback to readability if trafilatura fails
                 extraction_mode = "readability"
-        
+
         # Readability extraction (fallback or explicit)
         if extraction_mode == "readability":
             doc = Document(html_content)
@@ -1521,16 +1567,26 @@ async def fetch_url(
                             "title": img.get('title', '')
                         })
                 result["images"] = images[:50]  # Limit to 50 images
-        
-        # Add content statistics
-        result["stats"] = {
-            "content_length": len(result["content"]),
-            "word_count": len(result["content"].split()),
-            "extraction_mode": extraction_mode,
-            "format": format,
-            "fetch_method": fetch_method
-        }
-        
+
+        # Add content statistics (only for HTML extraction, not documents)
+        if not is_document:
+            result["stats"] = {
+                "content_length": len(result["content"]),
+                "word_count": len(result["content"].split()),
+                "extraction_mode": extraction_mode,
+                "format": format,
+                "fetch_method": fetch_method
+            }
+        else:
+            # Add document-specific stats
+            result["stats"] = {
+                "content_length": len(result["content"]),
+                "word_count": len(result["content"].split()),
+                "document_type": document_type,
+                "extraction_mode": "document",
+                "fetch_method": fetch_method
+            }
+
         return JSONResponse(content=result)
             
     except httpx.HTTPStatusError as e:
@@ -1659,12 +1715,59 @@ async def search_and_fetch(
                     stealth_mode=stealth_mode,
                     auto_bypass=auto_bypass
                 )
-                
+
                 html_content = fetch_result["html"]
                 final_url = fetch_result["final_url"]
                 fetch_method = fetch_result["fetch_method"]
                 protection_info = fetch_result["protection_info"]
-                
+                content_bytes = fetch_result.get("content_bytes", b"")
+                content_type = fetch_result.get("content_type", "")
+
+                # Check if this is a document file
+                is_document = False
+                document_type = None
+                document_text = ""
+
+                if DOCUMENT_EXTRACTOR_AVAILABLE and content_bytes:
+                    if is_document_url(final_url) or get_content_type_mime(content_type):
+                        doc_result = extract_document(content_bytes, content_type, final_url)
+                        if doc_result.get('success', False):
+                            is_document = True
+                            document_type = doc_result.get('document_type', 'unknown')
+                            document_text = doc_result.get('text', '')
+
+                # If it's a document, return it directly
+                if is_document:
+                    # Limit content length
+                    if len(document_text) > max_content_length:
+                        document_text = document_text[:max_content_length] + "\n\n... [truncated]"
+
+                    fetch_result_data = {
+                        "search_result": {
+                            "title": result.get("title", ""),
+                            "url": final_url,
+                            "snippet": result.get("content", ""),
+                            "engine": result.get("engine", ""),
+                            "score": result.get("score", 0)
+                        },
+                        "fetch_status": "success",
+                        "fetch_method": fetch_method,
+                        "is_document": True,
+                        "document_type": document_type,
+                        "fetched_content": {
+                            "title": result.get("title", ""),
+                            "content": document_text,
+                            "word_count": len(document_text.split()),
+                            "format": format
+                        }
+                    }
+
+                    # Add protection info if detected
+                    if protection_info:
+                        fetch_result_data["protection_info"] = protection_info
+
+                    return fetch_result_data
+
                 # Use trafilatura for better extraction
                 extracted = trafilatura.extract(
                     html_content,
