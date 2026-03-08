@@ -7,7 +7,8 @@ import scrapy
 from scrapy.linkextractors import LinkExtractor
 from scrapy.spidermiddlewares.httperror import HttpError
 from twisted.internet.error import DNSLookupError, TimeoutError
-from urllib.parse import urlparse, Path
+from urllib.parse import urlparse
+from pathlib import PurePosixPath
 import trafilatura
 import json
 from typing import Optional, List, Dict, Any
@@ -179,9 +180,9 @@ class SiteCrawlerSpider(scrapy.Spider):
 
                 return {
                     "metadata": {
-                        "title": Path(url).stem if url else "Document",
+                        "title": PurePosixPath(urlparse(url).path).stem if url else "Document",
                         "url": url,
-                        "sitename": Path(url).stem if url else "Document"
+                        "sitename": PurePosixPath(urlparse(url).path).stem if url else "Document"
                     },
                     "content": content,
                     "word_count": word_count,
