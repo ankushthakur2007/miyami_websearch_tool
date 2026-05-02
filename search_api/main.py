@@ -992,7 +992,7 @@ GUI_HTML = """
         <div class="quick-links">
             <a href="/docs" target="_blank">📚 API Documentation</a>
             <a href="/health" target="_blank">💚 Health Check</a>
-            <a href="https://github.com/ankushthakur08/miyami_websearch_tool" target="_blank">⭐ GitHub</a>
+            <a href="https://github.com/ankushthakur2007/miyami_websearch_tool" target="_blank">⭐ GitHub</a>
         </div>
     </div>
     
