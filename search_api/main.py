@@ -179,6 +179,237 @@ def is_valid_html(content: str) -> bool:
     return any(indicator in lower_content for indicator in html_indicators)
 
 
+def _strip_token_punct(value: str) -> str:
+    return value.strip().strip(",.;:()[]{}<>")
+
+
+def parse_advanced_query(query: str) -> Dict[str, Any]:
+    """Parse advanced operators (site:, filetype:, quoted phrases), negations, and OR groups."""
+    token_pattern = r'(-?)"([^"]+)"|(\S+)'
+    tokens: List[Dict[str, Any]] = []
+
+    for match in re.finditer(token_pattern, query):
+        if match.group(2) is not None:
+            tokens.append({
+                "value": match.group(2),
+                "is_phrase": True,
+                "negated": match.group(1) == "-"
+            })
+        else:
+            raw_value = match.group(3)
+            negated = raw_value.startswith("-")
+            value = raw_value[1:] if negated else raw_value
+            tokens.append({
+                "value": value,
+                "is_phrase": False,
+                "negated": negated
+            })
+
+    def new_group() -> Dict[str, List[str]]:
+        return {
+            "include_sites": [],
+            "exclude_sites": [],
+            "include_filetypes": [],
+            "exclude_filetypes": [],
+            "include_phrases": [],
+            "exclude_phrases": []
+        }
+
+    def group_has_filters(group: Dict[str, List[str]]) -> bool:
+        return any(group[key] for key in group)
+
+    groups: List[Dict[str, List[str]]] = []
+    current_group = new_group()
+    cleaned_parts: List[str] = []
+
+    for token in tokens:
+        value = token["value"].strip()
+        if not value:
+            continue
+
+        if not token["is_phrase"] and not token["negated"] and value.lower() == "or":
+            if group_has_filters(current_group):
+                groups.append(current_group)
+            current_group = new_group()
+            continue
+
+        if token["is_phrase"]:
+            if token["negated"]:
+                current_group["exclude_phrases"].append(value)
+            else:
+                current_group["include_phrases"].append(value)
+                cleaned_parts.append(f"\"{value}\"")
+            continue
+
+        value_lower = value.lower()
+        if value_lower.startswith("site:"):
+            site_value = _strip_token_punct(value[5:])
+            if site_value:
+                if token["negated"]:
+                    current_group["exclude_sites"].append(site_value)
+                else:
+                    current_group["include_sites"].append(site_value)
+            continue
+
+        if value_lower.startswith("filetype:"):
+            filetype_value = _strip_token_punct(value[9:]).lstrip(".")
+            if filetype_value:
+                if token["negated"]:
+                    current_group["exclude_filetypes"].append(filetype_value)
+                else:
+                    current_group["include_filetypes"].append(filetype_value)
+            continue
+
+        if token["negated"]:
+            current_group["exclude_phrases"].append(value)
+        else:
+            cleaned_parts.append(value)
+
+    if group_has_filters(current_group):
+        groups.append(current_group)
+
+    cleaned_query = " ".join(cleaned_parts).strip() or query.strip()
+
+    flat_filters = {
+        "include_sites": [],
+        "exclude_sites": [],
+        "include_filetypes": [],
+        "exclude_filetypes": [],
+        "include_phrases": [],
+        "exclude_phrases": []
+    }
+
+    for group in groups:
+        for key in flat_filters:
+            flat_filters[key].extend(group[key])
+
+    def dedupe(values: List[str]) -> List[str]:
+        seen = set()
+        unique: List[str] = []
+        for item in values:
+            if item not in seen:
+                unique.append(item)
+                seen.add(item)
+        return unique
+
+    for key in flat_filters:
+        flat_filters[key] = dedupe(flat_filters[key])
+
+    return {
+        "cleaned_query": cleaned_query,
+        "groups": groups,
+        "has_filters": len(groups) > 0,
+        **flat_filters
+    }
+
+
+def _normalize_host(host: str) -> str:
+    host = host.lower().strip().strip('.')
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+
+def _host_matches_site(host: str, site_value: str) -> bool:
+    if not host or not site_value:
+        return False
+
+    site_value = site_value.strip()
+    if site_value.startswith("*."):
+        site_value = site_value[2:]
+
+    if site_value.startswith("http://") or site_value.startswith("https://"):
+        site_value = urlparse(site_value).netloc
+    if "/" in site_value:
+        site_value = site_value.split("/")[0]
+
+    host_norm = _normalize_host(host)
+    site_norm = _normalize_host(site_value)
+    if not host_norm or not site_norm:
+        return False
+
+    return host_norm == site_norm or host_norm.endswith("." + site_norm)
+
+
+def _url_matches_filetypes(url: str, filetypes: List[str]) -> bool:
+    if not filetypes:
+        return True
+    try:
+        path = urlparse(url).path.lower()
+    except Exception:
+        return False
+
+    for filetype_value in filetypes:
+        ext = filetype_value.lower().lstrip(".")
+        if not ext:
+            continue
+        if path.endswith("." + ext):
+            return True
+    return False
+
+
+def _matches_phrases(result: Dict[str, Any], phrases: List[str], require_all: bool = True) -> bool:
+    if not phrases:
+        return True
+
+    haystack = " ".join([
+        result.get("title", ""),
+        result.get("content", ""),
+        result.get("url", "")
+    ])
+    haystack = re.sub(r"\s+", " ", haystack).lower()
+
+    normalized_phrases: List[str] = []
+    for phrase in phrases:
+        phrase_norm = re.sub(r"\s+", " ", phrase).strip().lower()
+        if phrase_norm:
+            normalized_phrases.append(phrase_norm)
+
+    if not normalized_phrases:
+        return True
+
+    if require_all:
+        return all(phrase in haystack for phrase in normalized_phrases)
+
+    return any(phrase in haystack for phrase in normalized_phrases)
+
+
+def _result_matches_group(result: Dict[str, Any], group: Dict[str, List[str]]) -> bool:
+    url = result.get("url", "")
+    try:
+        host = urlparse(url).netloc
+    except Exception:
+        host = ""
+
+    if group["include_sites"] and not any(_host_matches_site(host, site) for site in group["include_sites"]):
+        return False
+    if group["exclude_sites"] and any(_host_matches_site(host, site) for site in group["exclude_sites"]):
+        return False
+    if group["include_filetypes"] and not _url_matches_filetypes(url, group["include_filetypes"]):
+        return False
+    if group["exclude_filetypes"] and _url_matches_filetypes(url, group["exclude_filetypes"]):
+        return False
+    if group["include_phrases"] and not _matches_phrases(result, group["include_phrases"], require_all=True):
+        return False
+    if group["exclude_phrases"] and _matches_phrases(result, group["exclude_phrases"], require_all=False):
+        return False
+
+    return True
+
+
+def filter_results_by_advanced_ops(results: List[Dict[str, Any]], filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+    groups = filters.get("groups", [])
+    if not groups:
+        return results
+
+    filtered: List[Dict[str, Any]] = []
+    for result in results:
+        if any(_result_matches_group(result, group) for group in groups):
+            filtered.append(result)
+
+    return filtered
+
+
 async def robust_fetch_content(
     url: str,
     headers: dict = None,
@@ -248,6 +479,7 @@ from antibot import detect_protection, is_blocked, ProtectionType
 
 # Initialize DiskCache
 cache = Cache("/tmp/miyami_cache")
+CACHE_VERSION = "v2-advops"
 
 # Global Ranker (Lazy loaded)
 _ranker = None
@@ -992,7 +1224,7 @@ GUI_HTML = """
         <div class="quick-links">
             <a href="/docs" target="_blank">📚 API Documentation</a>
             <a href="/health" target="_blank">💚 Health Check</a>
-            <a href="https://github.com/ankushthakur08/miyami_websearch_tool" target="_blank">⭐ GitHub</a>
+            <a href="https://github.com/ankushthakur2007/miyami_websearch_tool" target="_blank">⭐ GitHub</a>
         </div>
     </div>
     
@@ -1198,6 +1430,7 @@ async def api_info():
 @app.get("/search-api")
 async def search_api(
     query: str = Query(..., description="Search query"),
+    debug: bool = Query(False, description="If true, return raw SearXNG response for debugging"),
     format: str = Query("json", description="Response format (json)"),
     categories: Optional[str] = Query(None, description="Search categories (general, images, videos, etc.)"),
     engines: Optional[str] = Query(None, description="Specific engines to use"),
@@ -1219,14 +1452,19 @@ async def search_api(
     Example: /search-api?query=AI+news&categories=general&time_range=day&rerank=true
     """
     # Check cache first
-    cache_key = f"search:{query}:{categories}:{engines}:{language}:{page}:{time_range}:{rerank}"
+    cache_key = f"search:{CACHE_VERSION}:{query}:{categories}:{engines}:{language}:{page}:{time_range}:{rerank}:{debug}"
     cached_result = cache.get(cache_key)
     if cached_result:
         return JSONResponse(content=cached_result)
 
     try:
+        advanced_filters = parse_advanced_query(query)
+        has_advanced_filters = advanced_filters.get("has_filters", False)
+
+        effective_query = query
+
         params = {
-            "q": query,
+            "q": effective_query,
             "format": "json",
             "language": language,
             "pageno": page
@@ -1248,15 +1486,37 @@ async def search_api(
                     detail=f"Invalid time_range. Must be one of: {', '.join(valid_ranges)}"
                 )
         
+        # Log when query contains advanced operators to help debugging
+        if has_advanced_filters:
+            print(f"[DEBUG] forwarding advanced query to SearXNG: {query}")
+            print(f"[DEBUG] effective query: {effective_query}")
+            print(f"[DEBUG] searx params: {params}")
+
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(f"{SEARXNG_URL}/search", params=params)
             response.raise_for_status()
-            
+
+            # If debug requested, return the raw SearXNG response and headers
+            if debug:
+                try:
+                    raw_text = response.text
+                except Exception:
+                    raw_text = None
+                return JSONResponse(content={
+                    "query": query,
+                    "effective_query": effective_query,
+                    "parsed_filters": advanced_filters if has_advanced_filters else {},
+                    "params": params,
+                    "searx_status_code": response.status_code,
+                    "searx_headers": dict(response.headers),
+                    "searx_raw_text": raw_text
+                })
+
             data = response.json()
             
             # Clean and format the response
             results = {
-                "query": data.get("query", query),
+                "query": query,
                 "number_of_results": data.get("number_of_results", 0),
                 "results": [],
                 "suggestions": data.get("suggestions", []),
@@ -1283,11 +1543,29 @@ async def search_api(
                 
                 results["results"].append(clean_result)
             
+            # Apply strict advanced-operator filters (if any)
+            if has_advanced_filters:
+                raw_count = results["number_of_results"]
+                results["results"] = filter_results_by_advanced_ops(results["results"], advanced_filters)
+                results["raw_number_of_results"] = raw_count
+                results["number_of_results"] = len(results["results"])
+                results["applied_filters"] = {
+                    "include_sites": advanced_filters.get("include_sites", []),
+                    "exclude_sites": advanced_filters.get("exclude_sites", []),
+                    "include_filetypes": advanced_filters.get("include_filetypes", []),
+                    "exclude_filetypes": advanced_filters.get("exclude_filetypes", []),
+                    "include_phrases": advanced_filters.get("include_phrases", []),
+                    "exclude_phrases": advanced_filters.get("exclude_phrases", []),
+                    "groups": advanced_filters.get("groups", []),
+                    "effective_query": effective_query,
+                    "cleaned_query": advanced_filters.get("cleaned_query", "")
+                }
+
             # Rerank if requested
             if rerank and results["results"]:
                 try:
                     ranker = get_ranker()
-                    rerank_request = RerankRequest(query=query, passages=[
+                    rerank_request = RerankRequest(query=effective_query, passages=[
                         {"id": i, "text": f"{r['title']} {r['content']}", "meta": r} 
                         for i, r in enumerate(results["results"])
                     ])
@@ -1634,15 +1912,19 @@ async def search_and_fetch(
     Example: /search-and-fetch?query=protected+site&stealth_mode=high&auto_bypass=true
     """
     # Check cache (include stealth params in key)
-    cache_key = f"search_fetch:{query}:{num_results}:{categories}:{language}:{format}:{time_range}:{rerank}:{stealth_mode}"
+    cache_key = f"search_fetch:{CACHE_VERSION}:{query}:{num_results}:{categories}:{language}:{format}:{time_range}:{rerank}:{stealth_mode}"
     cached_result = cache.get(cache_key)
     if cached_result:
         return JSONResponse(content=cached_result)
 
     try:
         # Step 1: Perform search
+        advanced_filters = parse_advanced_query(query)
+        has_advanced_filters = advanced_filters.get("has_filters", False)
+        effective_query = query
+
         search_params = {
-            "q": query,
+            "q": effective_query,
             "format": "json",
             "language": language,
             "pageno": 1
@@ -1669,12 +1951,16 @@ async def search_and_fetch(
         
         # Get top N results
         all_results = search_data.get("results", [])
+        raw_total = len(all_results)
+
+        if has_advanced_filters:
+            all_results = filter_results_by_advanced_ops(all_results, advanced_filters)
         
         # Rerank if requested
         if rerank and all_results:
             try:
                 ranker = get_ranker()
-                rerank_request = RerankRequest(query=query, passages=[
+                rerank_request = RerankRequest(query=effective_query, passages=[
                     {"id": i, "text": f"{r.get('title', '')} {r.get('content', '')}", "meta": r} 
                     for i, r in enumerate(all_results)
                 ])
@@ -1907,6 +2193,20 @@ async def search_and_fetch(
             "results": fetched_results,
             "suggestions": search_data.get("suggestions", [])
         }
+
+        if has_advanced_filters:
+            final_response["applied_filters"] = {
+                "include_sites": advanced_filters.get("include_sites", []),
+                "exclude_sites": advanced_filters.get("exclude_sites", []),
+                "include_filetypes": advanced_filters.get("include_filetypes", []),
+                "exclude_filetypes": advanced_filters.get("exclude_filetypes", []),
+                "include_phrases": advanced_filters.get("include_phrases", []),
+                "exclude_phrases": advanced_filters.get("exclude_phrases", []),
+                "groups": advanced_filters.get("groups", []),
+                "effective_query": effective_query,
+                "cleaned_query": advanced_filters.get("cleaned_query", "")
+            }
+            final_response["filtered_out"] = max(raw_total - len(all_results), 0)
         
         # Cache result
         cache.set(cache_key, final_response, expire=3600)
@@ -1972,7 +2272,7 @@ async def deep_research(
         )
     
     # Check cache
-    cache_key = f"deep_research:{','.join(sorted(query_list))}:{breadth}:{time_range}:{max_content_length}:{stealth_mode}"
+    cache_key = f"deep_research:{CACHE_VERSION}:{','.join(sorted(query_list))}:{breadth}:{time_range}:{max_content_length}:{stealth_mode}"
     cached_result = cache.get(cache_key)
     if cached_result:
         return JSONResponse(content=cached_result)
@@ -2204,7 +2504,7 @@ async def crawl_site(
         exclude_pattern_list = [p.strip() for p in exclude_patterns.split(",") if p.strip()]
     
     # Check cache
-    cache_key = f"crawl:{start_url}:{max_pages}:{max_depth}:{format}:{url_patterns}:{exclude_patterns}:{stealth_mode}:{obey_robots}"
+    cache_key = f"crawl:{CACHE_VERSION}:{start_url}:{max_pages}:{max_depth}:{format}:{url_patterns}:{exclude_patterns}:{stealth_mode}:{obey_robots}"
     cached_result = cache.get(cache_key)
     if cached_result:
         return JSONResponse(content=cached_result)
@@ -2587,7 +2887,7 @@ async def youtube_transcript(
         )
     
     # Check cache
-    cache_key = f"yt-transcript:{video_id}:{format}:{lang}:{translate}:{start}:{end}:{list_langs}"
+    cache_key = f"yt-transcript:{CACHE_VERSION}:{video_id}:{format}:{lang}:{translate}:{start}:{end}:{list_langs}"
     cached_result = cache.get(cache_key)
     if cached_result:
         return JSONResponse(content=cached_result)
