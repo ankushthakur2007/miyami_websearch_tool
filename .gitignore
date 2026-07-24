@@ -1,8 +1,3 @@
-# Git
-.git/
-.gitignore
-.gitattributes
-
 # Python
 __pycache__/
 *.py[cod]
@@ -43,16 +38,13 @@ venv.bak/
 *.swp
 *.swo
 *~
-
-# OS
 .DS_Store
-Thumbs.db
-ehthumbs.db
-Desktop.ini
 
 # Logs
 *.log
 logs/
+/tmp/searxng.log
+/tmp/api.log
 
 # Cache
 .cache/
@@ -64,10 +56,15 @@ htmlcov/
 tmp/
 temp/
 
-# Local config files (not for production)
+# Docker
+.docker/
+
+# Local config
 *.local.yml
 *.local.yaml
 .env.local
+searxng_settings.yml
+searx/settings.yml
 
 # Test output
 test-results/
@@ -78,25 +75,7 @@ coverage.xml
 *.sqlite
 *.sqlite3
 
-# Documentation
-*.md
-!README.md
-
-# CI/CD
-.github/
-.gitlab/
-
-# SearXNG specific - settings file contains secrets
-searxng_settings.yml
-searx/settings.yml
-
-# Docker
-.docker/
-Dockerfile*
-docker-compose*
-.dockerignore
-
-# Backup
-*.bak
-*.backup
-*~
+# OS
+Thumbs.db
+ehthumbs.db
+Desktop.ini

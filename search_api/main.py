@@ -18,7 +18,11 @@ import json
 import unicodedata
 import gzip
 import zlib
+import ipaddress
+import socket
 from io import BytesIO
+import ipaddress
+import socket
 
 # Try to import document extraction module
 try:
@@ -36,6 +40,76 @@ except ImportError:
 
 # Import free stealth and bot detection modules (no API keys needed)
 from stealth_client import StealthClient, StealthLevel, stealth_get
+
+
+# ===== SSRF Protection =====
+PRIVATE_IP_RANGES = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),  # link-local
+    ipaddress.ip_network("::1/128"),  # IPv6 loopback
+    ipaddress.ip_network("fc00::/7"),  # IPv6 private
+    ipaddress.ip_network("fe80::/10"),  # IPv6 link-local
+]
+
+
+def validate_public_url(url: str) -> str:
+    """
+    Validate URL is a public HTTP/HTTPS URL.
+    Raises HTTPException if URL is invalid or points to private/internal addresses.
+    Returns the validated URL.
+    """
+    parsed = urlparse(url)
+    
+    # Check scheme
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="Only HTTP/HTTPS URLs are allowed")
+    
+    if not parsed.netloc:
+        raise HTTPException(status_code=400, detail="Invalid URL: missing hostname")
+    
+    # Extract hostname (remove port)
+    hostname = parsed.netloc.split(":")[0]
+    
+    # Block localhost and common internal hostnames
+    blocked_hosts = {"localhost", "localhost.localdomain", "localhost6", "localhost6.localdomain6"}
+    if hostname.lower() in blocked_hosts:
+        raise HTTPException(status_code=400, detail="Access to localhost is not allowed")
+    
+    # Resolve hostname to IP and check if private
+    try:
+        ips = socket.getaddrinfo(hostname, None)
+        for ip_info in ips:
+            ip_str = ip_info[4][0]
+            ip = ipaddress.ip_address(ip_str)
+            
+            # Check if IP is in private ranges
+            for private_range in PRIVATE_IP_RANGES:
+                if ip in private_range:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Access to private IP addresses ({ip_str}) is not allowed"
+                    )
+    except socket.gaierror:
+        # If DNS resolution fails, we can't validate - allow but log
+        pass
+    except HTTPException:
+        raise
+    except Exception:
+        # Other errors - allow but could log
+        pass
+    
+    return url
+
+
+def sanitize_subprocess_arg(value: str) -> str:
+    """Sanitize string for safe use as subprocess argument."""
+    # Allow alphanumeric, dots, hyphens, underscores, colons, slashes, commas, @, spaces
+    if not re.match(r'^[a-zA-Z0-9._\-:/,@\s]+$', value):
+        raise HTTPException(status_code=400, detail=f"Invalid characters in argument: {value[:50]}")
+    return value
 
 
 def decompress_content(raw_bytes: bytes, content_encoding: str = None) -> bytes:
@@ -518,6 +592,9 @@ async def advanced_fetch(
     Returns:
         Dict with html, content_bytes, content_type, status_code, final_url, fetch_method, protection_info
     """
+    # SSRF protection: validate public URL
+    url = validate_public_url(url)
+    
     fetch_method = "standard"
     protection_info = None
     html = ""
@@ -1463,8 +1540,10 @@ async def search_api(
 
         effective_query = query
 
+        # Send original query with operators to SearXNG (engines like Google/Bing/DDG support site:, filetype:)
+        # Keep local filtering as fallback for engines that don't support operators
         params = {
-            "q": effective_query,
+            "q": query,
             "format": "json",
             "language": language,
             "pageno": page
@@ -1488,8 +1567,8 @@ async def search_api(
         
         # Log when query contains advanced operators to help debugging
         if has_advanced_filters:
-            print(f"[DEBUG] forwarding advanced query to SearXNG: {query}")
-            print(f"[DEBUG] effective query: {effective_query}")
+            print(f"[DEBUG] Original query with operators: {query}")
+            print(f"[DEBUG] Cleaned query sent to SearXNG: {params['q']}")
             print(f"[DEBUG] searx params: {params}")
 
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1627,6 +1706,9 @@ async def fetch_url(
         if not parsed.scheme or not parsed.netloc:
             raise HTTPException(status_code=400, detail="Invalid URL format")
         
+        # SSRF protection: validate public URL
+        url = validate_public_url(url)
+        
         # Validate stealth_mode
         valid_stealth_modes = ["off", "low", "medium", "high"]
         if stealth_mode.lower() not in valid_stealth_modes:
@@ -1644,6 +1726,10 @@ async def fetch_url(
         
         html_content = fetch_result["html"]
         final_url = fetch_result["final_url"]
+        
+        # Validate final URL after redirects (SSRF protection)
+        final_url = validate_public_url(final_url)
+        
         status_code = fetch_result["status_code"]
         fetch_method = fetch_result["fetch_method"]
         protection_info = fetch_result["protection_info"]
@@ -1991,6 +2077,17 @@ async def search_and_fetch(
                     "search_result": result,
                     "fetch_status": "error",
                     "fetch_error": "Invalid URL format",
+                    "content": None
+                }
+            
+            # SSRF protection: validate public URL
+            try:
+                url = validate_public_url(url)
+            except HTTPException as e:
+                return {
+                    "search_result": result,
+                    "fetch_status": "error",
+                    "fetch_error": e.detail,
                     "content": None
                 }
             
@@ -2486,6 +2583,12 @@ async def crawl_site(
     if not parsed.scheme or not parsed.netloc:
         raise HTTPException(status_code=400, detail="Invalid URL format")
     
+    # SSRF protection: validate public URL
+    start_url = validate_public_url(start_url)
+    
+    # Re-parse after validation
+    parsed = urlparse(start_url)
+    
     # Validate stealth_mode
     valid_stealth_modes = ["off", "low", "medium", "high"]
     if stealth_mode.lower() not in valid_stealth_modes:
@@ -2547,10 +2650,30 @@ async def crawl_site(
                 '-s', f'STEALTH_MODE={stealth_mode}',
             ])
         
+        # Sanitize subprocess arguments to prevent command injection
+        def sanitize_arg(arg: str) -> str:
+            # Allow key=value format - split and sanitize only the value
+            if '=' in arg:
+                key, value = arg.split('=', 1)
+                if not re.match(r'^[a-zA-Z0-9._\-:/@=]+$', value):
+                    raise HTTPException(status_code=400, detail=f"Invalid characters in argument value: {value[:50]}")
+                return f'{key}={value}'
+            if not re.match(r'^[a-zA-Z0-9._\-:/,@\s]+$', arg):
+                raise HTTPException(status_code=400, detail=f"Invalid characters in argument: {arg[:50]}")
+            return arg
+        
         if url_pattern_list:
-            cmd.extend(['-a', f'url_patterns={",".join(url_pattern_list)}'])
+            sanitized_patterns = ','.join(sanitize_arg(p) for p in url_pattern_list)
+            cmd.extend(['-a', f'url_patterns={sanitized_patterns}'])
         if exclude_pattern_list:
-            cmd.extend(['-a', f'exclude_patterns={",".join(exclude_pattern_list)}'])
+            sanitized_excludes = ','.join(sanitize_arg(p) for p in exclude_pattern_list)
+            cmd.extend(['-a', f'exclude_patterns={sanitized_excludes}'])
+        
+        # Sanitize user-provided values in cmd (but not flags like -a, -s)
+        # Only sanitize values that come after -a or -s flags
+        for i, arg in enumerate(cmd):
+            if isinstance(arg, str) and i > 0 and cmd[i-1] in ('-a', '-s'):
+                cmd[i] = sanitize_arg(arg)
         
         # Run Scrapy in subprocess to avoid reactor conflicts
         process = subprocess.run(
