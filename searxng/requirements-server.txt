@@ -1,0 +1,2 @@
+granian==2.6.0
+granian[pname]==2.6.0

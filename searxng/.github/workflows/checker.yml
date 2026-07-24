@@ -1,0 +1,47 @@
+---
+name: Checker
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * 5"
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.14"
+
+jobs:
+  search:
+    if: github.repository_owner == 'searxng' || github.event_name == 'workflow_dispatch'
+    name: Search
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548  # v6.1.0
+        with:
+          python-version: "${{ env.PYTHON_VERSION }}"
+
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+        with:
+          persist-credentials: "false"
+
+      - name: Setup cache Python
+        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb  # v5.0.1
+        with:
+          key: "python-${{ env.PYTHON_VERSION }}-${{ runner.arch }}-${{ hashFiles('./requirements*.txt') }}"
+          restore-keys: "python-${{ env.PYTHON_VERSION }}-${{ runner.arch }}-"
+          path: "./local"
+
+      - name: Setup venv
+        run: make V=1 install
+
+      - name: Search checker
+        run: make search.checker
