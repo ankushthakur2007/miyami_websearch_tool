@@ -1386,7 +1386,6 @@ GUI_HTML = """
                 const params = { query: fd.get('query') };
                 if (fd.get('time_range')) params.time_range = fd.get('time_range');
                 if (fd.get('categories')) params.categories = fd.get('categories');
-                if (fd.get('rerank')) params.rerank = 'true';
                 return params;
             });
         });
