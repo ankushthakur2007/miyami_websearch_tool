@@ -21,8 +21,8 @@ ENV PATH="/usr/local/bin:${PATH}"
 # Set working directory
 WORKDIR /app
 
-# Clone SearXNG
-RUN git clone https://github.com/searxng/searxng.git /app/searxng
+# Copy SearXNG source (now part of repo)
+COPY searxng /app/searxng
 
 # Install SearXNG dependencies
 WORKDIR /app/searxng
@@ -38,9 +38,6 @@ RUN pip install --no-cache-dir -r /app/search_api/requirements.txt
 # Copy startup script
 COPY start.sh /app/start.sh
 RUN chmod +x /app/start.sh
-
-# Copy SearXNG settings
-COPY searxng_settings.yml /app/searxng/searx/settings.yml
 
 # Expose ports
 EXPOSE 8080
