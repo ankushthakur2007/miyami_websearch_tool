@@ -79,3 +79,7 @@ coverage.xml
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+
+
+#pi agent
+.pi-subagents
