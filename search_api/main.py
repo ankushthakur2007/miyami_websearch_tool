@@ -12,7 +12,6 @@ from dateutil import parser as date_parser
 from datetime import datetime, timedelta
 import re
 from diskcache import Cache
-from flashrank import Ranker, RerankRequest
 import os
 import json
 import unicodedata
@@ -555,18 +554,8 @@ from antibot import detect_protection, is_blocked, ProtectionType
 cache = Cache("/tmp/miyami_cache")
 CACHE_VERSION = "v2-advops"
 
-# Global Ranker (Lazy loaded)
-_ranker = None
-
 # Global Stealth Client (Lazy loaded)
 _stealth_client = None
-
-def get_ranker():
-    global _ranker
-    if _ranker is None:
-        # Use a lightweight model
-        _ranker = Ranker(model_name="ms-marco-TinyBERT-L-2-v2", cache_dir="/tmp/flashrank")
-    return _ranker
 
 def get_stealth_client():
     global _stealth_client
@@ -1119,8 +1108,6 @@ GUI_HTML = """
                         </div>
                     </div>
                     <div class="form-group checkbox-group">
-                        <input type="checkbox" name="rerank" id="rerank">
-                        <label for="rerank">AI Reranking (better relevance)</label>
                     </div>
                     <button type="submit" class="btn btn-primary">🔍 Search</button>
                 </form>
@@ -1514,10 +1501,9 @@ async def search_api(
     language: Optional[str] = Query("en", description="Search language"),
     page: Optional[int] = Query(1, description="Page number"),
     time_range: Optional[str] = Query(None, description="Time filter: day (past 24h), week (past week), month (past month), year (past year)"),
-    rerank: bool = Query(False, description="Rerank results using AI for better relevance")
+
 ):
     """
-    Search using SearXNG and return JSON results with optional time filtering and AI reranking
     
     Time Range Options:
     - day: Results from the past 24 hours
@@ -1526,10 +1512,9 @@ async def search_api(
     - year: Results from the past year
     - None: All results (default)
     
-    Example: /search-api?query=AI+news&categories=general&time_range=day&rerank=true
     """
     # Check cache first
-    cache_key = f"search:{CACHE_VERSION}:{query}:{categories}:{engines}:{language}:{page}:{time_range}:{rerank}:{debug}"
+    cache_key = f"search:{CACHE_VERSION}:{query}:{categories}:{engines}:{language}:{page}:{time_range}:{debug}"
     cached_result = cache.get(cache_key)
     if cached_result:
         return JSONResponse(content=cached_result)
@@ -1640,20 +1625,6 @@ async def search_api(
                     "cleaned_query": advanced_filters.get("cleaned_query", "")
                 }
 
-            # Rerank if requested
-            if rerank and results["results"]:
-                try:
-                    ranker = get_ranker()
-                    rerank_request = RerankRequest(query=effective_query, passages=[
-                        {"id": i, "text": f"{r['title']} {r['content']}", "meta": r} 
-                        for i, r in enumerate(results["results"])
-                    ])
-                    ranked_results = ranker.rerank(rerank_request)
-                    # Update results with ranked order
-                    results["results"] = [r["meta"] for r in ranked_results]
-                except Exception as e:
-                    print(f"Reranking failed: {e}")
-            
             # Cache the result (expire in 1 hour)
             cache.set(cache_key, results, expire=3600)
             
@@ -1969,7 +1940,7 @@ async def search_and_fetch(
     format: str = Query("markdown", description="Output format: text, markdown, or html"),
     max_content_length: int = Query(100000, description="Maximum content length per page"),
     time_range: Optional[str] = Query(None, description="Time filter: day, week, month, year"),
-    rerank: bool = Query(False, description="Rerank results using AI for better relevance"),
+,
     # Stealth mode (FREE - no API keys needed)
     stealth_mode: str = Query("off", description="Stealth mode: off, low, medium, high (FREE anti-bot bypass)"),
     auto_bypass: bool = Query(False, description="Automatically try higher stealth levels if blocked")
@@ -1998,7 +1969,7 @@ async def search_and_fetch(
     Example: /search-and-fetch?query=protected+site&stealth_mode=high&auto_bypass=true
     """
     # Check cache (include stealth params in key)
-    cache_key = f"search_fetch:{CACHE_VERSION}:{query}:{num_results}:{categories}:{language}:{format}:{time_range}:{rerank}:{stealth_mode}"
+    cache_key = f"search_fetch:{CACHE_VERSION}:{query}:{num_results}:{categories}:{language}:{format}:{time_range}:{{stealth_mode}"
     cached_result = cache.get(cache_key)
     if cached_result:
         return JSONResponse(content=cached_result)
@@ -2041,19 +2012,6 @@ async def search_and_fetch(
 
         if has_advanced_filters:
             all_results = filter_results_by_advanced_ops(all_results, advanced_filters)
-        
-        # Rerank if requested
-        if rerank and all_results:
-            try:
-                ranker = get_ranker()
-                rerank_request = RerankRequest(query=effective_query, passages=[
-                    {"id": i, "text": f"{r.get('title', '')} {r.get('content', '')}", "meta": r} 
-                    for i, r in enumerate(all_results)
-                ])
-                ranked_results = ranker.rerank(rerank_request)
-                all_results = [r["meta"] for r in ranked_results]
-            except Exception as e:
-                print(f"Reranking failed: {e}")
         
         top_results = all_results[:num_results]
         
@@ -2387,7 +2345,7 @@ async def deep_research(
                     max_content_length=max_content_length,
                     categories="general",
                     language="en",
-                    rerank=True,
+                    
                     stealth_mode=stealth_mode,
                     auto_bypass=auto_bypass
                 )

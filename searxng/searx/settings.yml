@@ -806,12 +806,14 @@ engines:
     display_type: ["infobox"]
     tests: *tests_infobox
     categories: [general]
+    disabled: true
 
   - name: duckduckgo
     engine: duckduckgo
     shortcut: ddg
     network:
       impersonate: chrome120
+    timeout: 30.0
 
   - name: duckduckgo images
     engine: duckduckgo_extra
@@ -1020,6 +1022,7 @@ engines:
     shortcut: go
     # additional_tests:
     #   android: *test_android
+    disabled: true
 
   - name: google images
     engine: google_images
@@ -1032,22 +1035,26 @@ engines:
     #       lang: ['en', 'de', 'fr', 'zh-CN']
     #     result_container:
     #       - ['one_title_contains', 'Salvador']
+    disabled: true
 
   - name: google news
     engine: google_news
     shortcut: gon
     # additional_tests:
     #   android: *test_android
+    disabled: true
 
   - name: google videos
     engine: google_videos
     shortcut: gov
     # additional_tests:
     #   android: *test_android
+    disabled: true
 
   - name: google scholar
     engine: google_scholar
     shortcut: gos
+    disabled: true
 
   - name: google play apps
     engine: google_play
@@ -1988,6 +1995,7 @@ engines:
     categories: [general, web]
     additional_tests:
       rosebud: *test_rosebud
+    disabled: true
     network:
       impersonate: chrome120
 
@@ -1996,12 +2004,14 @@ engines:
     startpage_categ: news
     categories: [news, web]
     shortcut: spn
+    disabled: true
 
   - name: startpage images
     engine: startpage
     startpage_categ: images
     categories: [images, web]
     shortcut: spi
+    disabled: true
 
   - name: steam
     engine: steam
@@ -2628,6 +2638,7 @@ engines:
     # brave_spellcheck: true
     network:
       impersonate: chrome120
+    timeout: 20.0
 
   - name: brave.images
     engine: brave
