@@ -1940,7 +1940,6 @@ async def search_and_fetch(
     format: str = Query("markdown", description="Output format: text, markdown, or html"),
     max_content_length: int = Query(100000, description="Maximum content length per page"),
     time_range: Optional[str] = Query(None, description="Time filter: day, week, month, year"),
-,
     # Stealth mode (FREE - no API keys needed)
     stealth_mode: str = Query("off", description="Stealth mode: off, low, medium, high (FREE anti-bot bypass)"),
     auto_bypass: bool = Query(False, description="Automatically try higher stealth levels if blocked")
