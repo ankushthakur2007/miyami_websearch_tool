@@ -7,6 +7,12 @@ services:
     region: oregon
     healthCheckPath: /health
     autoDeploy: true
+    buildCommand: ""
+    buildArgs:
+      - key: GIT_COMMIT
+        value: "${GIT_COMMIT}"
+      - key: GIT_BRANCH
+        value: "${GIT_BRANCH}"
     envVars:
       - key: SEARXNG_DEBUG
         value: 0
