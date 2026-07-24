@@ -1967,7 +1967,7 @@ async def search_and_fetch(
     Example: /search-and-fetch?query=protected+site&stealth_mode=high&auto_bypass=true
     """
     # Check cache (include stealth params in key)
-    cache_key = f"search_fetch:{CACHE_VERSION}:{query}:{num_results}:{categories}:{language}:{format}:{time_range}:{{stealth_mode}"
+    cache_key = f"search_fetch:{CACHE_VERSION}:{query}:{num_results}:{categories}:{language}:{format}:{time_range}:{stealth_mode}"
     cached_result = cache.get(cache_key)
     if cached_result:
         return JSONResponse(content=cached_result)
