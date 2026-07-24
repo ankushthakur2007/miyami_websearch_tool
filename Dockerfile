@@ -22,9 +22,14 @@ ENV PATH="/usr/local/bin:${PATH}"
 # Set working directory
 WORKDIR /app
 
-# Copy SearXNG source (now part of repo) AND .git for version detection
+# Copy SearXNG source (now part of repo)
 COPY searxng /app/searxng
-COPY .git /app/searxng/.git
+
+# Pass git commit hash as build arg for version detection
+ARG GIT_COMMIT=unknown
+ARG GIT_BRANCH=unknown
+ENV GIT_COMMIT=$GIT_COMMIT
+ENV GIT_BRANCH=$GIT_BRANCH
 
 # Install SearXNG dependencies
 WORKDIR /app/searxng

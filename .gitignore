@@ -83,3 +83,7 @@ Desktop.ini
 
 #pi agent
 .pi-subagents
+
+
+#jsonl
+.jsonl*
