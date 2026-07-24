@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     libffi-dev \
     libssl-dev \
     unzip \
+    valkey-server \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Deno (required by yt-dlp for JavaScript execution)
@@ -21,12 +22,17 @@ ENV PATH="/usr/local/bin:${PATH}"
 # Set working directory
 WORKDIR /app
 
-# Copy SearXNG source (now part of repo)
+# Copy SearXNG source (now part of repo) AND .git for version detection
 COPY searxng /app/searxng
+COPY .git /app/searxng/.git
 
 # Install SearXNG dependencies
 WORKDIR /app/searxng
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy SearXNG limiter config
+RUN mkdir -p /etc/searxng
+COPY searxng/searx/limiter.toml /etc/searxng/limiter.toml
 
 # Copy FastAPI application
 WORKDIR /app
@@ -46,7 +52,9 @@ EXPOSE 8080
 ENV SEARXNG_DEBUG=0 \
     SEARXNG_BIND_ADDRESS="127.0.0.1" \
     SEARXNG_PORT=8888 \
-    PORT=8080
+    PORT=8080 \
+    SEARXNG_VALKEY_URL="valkey://localhost:6379/0" \
+    SEARXNG_LIMITER=true
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
