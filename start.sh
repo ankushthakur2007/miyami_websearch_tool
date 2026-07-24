@@ -7,6 +7,22 @@ echo "Starting SearXNG Search API services..."
 export SEARXNG_SECRET="${SEARXNG_SECRET:-$(openssl rand -hex 32)}"
 export SEARXNG_BIND_ADDRESS="${SEARXNG_BIND_ADDRESS:-127.0.0.1}"
 export SEARXNG_PORT="${SEARXNG_PORT:-8888}"
+export SEARXNG_VALKEY_URL="${SEARXNG_VALKEY_URL:-valkey://localhost:6379/0}"
+
+# Start Valkey server
+echo "Starting Valkey server..."
+valkey-server --daemonize yes --port 6379
+
+# Wait for Valkey to be ready
+echo "Waiting for Valkey to start..."
+for i in {1..10}; do
+    if valkey-cli ping > /dev/null 2>&1; then
+        echo "Valkey is ready!"
+        break
+    fi
+    echo "Waiting for Valkey... ($i/10)"
+    sleep 1
+done
 
 # Start SearXNG in the background
 cd /app/searxng
