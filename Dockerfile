@@ -59,7 +59,7 @@ ENV SEARXNG_DEBUG=0 \
     SEARXNG_PORT=8888 \
     PORT=8080 \
     SEARXNG_VALKEY_URL="valkey://localhost:6379/0" \
-    SEARXNG_LIMITER=true
+    SEARXNG_LIMITER=false
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \

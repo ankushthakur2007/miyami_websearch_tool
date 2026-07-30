@@ -22,5 +22,7 @@ services:
         value: 8888
       - key: PORT
         value: 10000
+      - key: SEARXNG_LIMITER
+        value: "false"
       - key: SEARXNG_SECRET
         generateValue: true
