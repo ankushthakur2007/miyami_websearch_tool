@@ -526,6 +526,10 @@ async def search_api(
                         clean[opt] = r[opt]
                 results["results"].append(clean)
 
+            number_fetched = len(results["results"])
+            if results["number_of_results"] == 0 and number_fetched > 0:
+                results["number_of_results"] = number_fetched
+
             cache.set(cache_key, results, expire=3600)
             return JSONResponse(content=results)
 
