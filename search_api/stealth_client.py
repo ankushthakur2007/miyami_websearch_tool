@@ -10,8 +10,6 @@ Provides HTTP client with anti-detection capabilities:
 
 import random
 import asyncio
-import ipaddress
-import socket
 from typing import Optional, Dict, Any, Tuple
 from dataclasses import dataclass
 from enum import Enum
@@ -232,43 +230,7 @@ class StealthClient:
         Returns:
             StealthResponse with status, text, headers, and metadata
         """
-        # SSRF protection: validate public URL
-        from urllib.parse import urlparse
-        import ipaddress
-        import socket
-        
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https"):
-            raise ValueError("Only HTTP/HTTPS URLs are allowed")
-        if not parsed.netloc:
-            raise ValueError("Invalid URL: missing hostname")
-        
-        hostname = parsed.netloc.split(":")[0]
-        blocked_hosts = {"localhost", "localhost.localdomain"}
-        if hostname.lower() in blocked_hosts:
-            raise ValueError("Access to localhost is not allowed")
-        
-        try:
-            ips = socket.getaddrinfo(hostname, None)
-            for ip_info in ips:
-                ip_str = ip_info[4][0]
-                ip = ipaddress.ip_address(ip_str)
-                private_ranges = [
-                    ipaddress.ip_network("10.0.0.0/8"),
-                    ipaddress.ip_network("172.16.0.0/12"),
-                    ipaddress.ip_network("192.168.0.0/16"),
-                    ipaddress.ip_network("127.0.0.0/8"),
-                    ipaddress.ip_network("169.254.0.0/16"),
-                    ipaddress.ip_network("::1/128"),
-                    ipaddress.ip_network("fc00::/7"),
-                    ipaddress.ip_network("fe80::/10"),
-                ]
-                for private_range in private_ranges:
-                    if ip in private_range:
-                        raise ValueError(f"Access to private IP ({ip_str}) not allowed")
-        except socket.gaierror:
-            pass
-        
+        # ponytail: SSRF validation handled by caller (main.py validate_public_url). No duplicate here.
         browser_type, user_agent = self._select_browser()
         
         if stealth_level == StealthLevel.LOW:
@@ -313,7 +275,7 @@ class StealthClient:
         async with httpx.AsyncClient(
             timeout=self.timeout,
             follow_redirects=follow_redirects,
-            http2=True
+            # ponytail: removed strict http2=True requirement avoiding h2 pkg dependency errors
         ) as client:
             response = await client.get(url, headers=headers)
             return StealthResponse(

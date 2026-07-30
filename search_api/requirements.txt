@@ -6,8 +6,6 @@ readability-lxml==0.8.4.1
 lxml
 html2text
 trafilatura
-python-dateutil
-flashrank
 diskcache
 
 # Advanced fetch capabilities (stealth mode & JS rendering)

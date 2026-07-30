@@ -440,31 +440,4 @@ def _get_recommendation(protections: List[ProtectionType], is_blocked: bool) -> 
     return "; ".join(recommendations)
 
 
-def get_bypass_strategies(protection_type: ProtectionType) -> List[str]:
-    """
-    Get list of bypass strategies for a specific protection type
-    
-    Args:
-        protection_type: The type of protection to bypass
-        
-    Returns:
-        List of strategy names in order of effectiveness
-    """
-    strategies = {
-        ProtectionType.CLOUDFLARE: ["stealth_medium", "js_render"],
-        ProtectionType.CLOUDFLARE_CHALLENGE: ["js_render", "scrapingbee", "browserless"],
-        ProtectionType.CLOUDFLARE_TURNSTILE: ["scrapingbee", "browserless", "flaresolverr"],
-        ProtectionType.CLOUDFLARE_UNDER_ATTACK: ["wait_and_retry", "js_render"],
-        ProtectionType.RECAPTCHA_V2: ["captcha_service", "scrapingbee_premium"],
-        ProtectionType.RECAPTCHA_V3: ["js_render", "stealth_high"],
-        ProtectionType.HCAPTCHA: ["captcha_service", "scrapingbee_premium"],
-        ProtectionType.DATADOME: ["residential_proxy", "stealth_high", "js_render"],
-        ProtectionType.AKAMAI: ["curl_cffi", "stealth_high"],
-        ProtectionType.PERIMETERX: ["js_render", "stealth_high"],
-        ProtectionType.IMPERVA: ["js_render", "stealth_high"],
-        ProtectionType.KASADA: ["js_render", "stealth_high"],
-        ProtectionType.RATE_LIMITED: ["delay", "proxy_rotation"],
-        ProtectionType.ACCESS_DENIED: ["proxy_rotation", "stealth_high"],
-    }
-    
-    return strategies.get(protection_type, ["stealth_high", "js_render"])
+# ponytail: removed get_bypass_strategies — was dead code, nothing called it. Add back when auto-bypass needs strategy selection.

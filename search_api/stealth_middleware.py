@@ -97,42 +97,4 @@ class StealthDownloaderMiddleware:
         return None
 
 
-class AutoBypassMiddleware:
-    """
-    Middleware that detects bot protection and automatically escalates stealth levels.
-    Works in conjunction with StealthDownloaderMiddleware.
-    """
-    
-    def __init__(self):
-        self.failed_urls = set()
-    
-    @classmethod
-    def from_crawler(cls, crawler):
-        middleware = cls()
-        crawler.signals.connect(middleware.spider_opened, signal=signals.spider_opened)
-        return middleware
-    
-    def spider_opened(self, spider):
-        spider.logger.info('AutoBypassMiddleware enabled')
-    
-    def process_response(self, request, response, spider):
-        """Check response for bot protection"""
-        from antibot import detect_protection
-        
-        # Check for bot protection
-        protection = detect_protection(response.text)
-        
-        if protection.is_blocked:
-            spider.logger.warning(
-                f'Bot protection detected on {request.url}: '
-                f'{[p.value for p in protection.protections]}'
-            )
-            
-            # Mark as failed
-            self.failed_urls.add(request.url)
-            
-            # You could implement retry logic here with higher stealth level
-            # For now, just log it
-            spider.logger.info(f'Recommendation: {protection.recommendation}')
-        
-        return response
+# ponytail: removed AutoBypassMiddleware — was a TODO stub that only logged. Add back when retry logic exists.

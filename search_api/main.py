@@ -8,18 +8,13 @@ import asyncio
 from urllib.parse import urljoin, urlparse
 import trafilatura
 import html2text
-from dateutil import parser as date_parser
-from datetime import datetime, timedelta
+from datetime import datetime
 import re
 from diskcache import Cache
 import os
 import json
-import unicodedata
 import gzip
 import zlib
-import ipaddress
-import socket
-from io import BytesIO
 import ipaddress
 import socket
 
@@ -37,8 +32,8 @@ try:
 except ImportError:
     BROTLI_AVAILABLE = False
 
-# Import free stealth and bot detection modules (no API keys needed)
 from stealth_client import StealthClient, StealthLevel, stealth_get
+from antibot import detect_protection, is_blocked, ProtectionType
 
 
 # ===== SSRF Protection =====
@@ -47,109 +42,49 @@ PRIVATE_IP_RANGES = [
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
     ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("169.254.0.0/16"),  # link-local
-    ipaddress.ip_network("::1/128"),  # IPv6 loopback
-    ipaddress.ip_network("fc00::/7"),  # IPv6 private
-    ipaddress.ip_network("fe80::/10"),  # IPv6 link-local
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
 ]
 
 
 def validate_public_url(url: str) -> str:
-    """
-    Validate URL is a public HTTP/HTTPS URL.
-    Raises HTTPException if URL is invalid or points to private/internal addresses.
-    Returns the validated URL.
-    """
+    """Validate URL is a public HTTP/HTTPS URL. Raises HTTPException if not."""
     parsed = urlparse(url)
-    
-    # Check scheme
     if parsed.scheme not in ("http", "https"):
         raise HTTPException(status_code=400, detail="Only HTTP/HTTPS URLs are allowed")
-    
     if not parsed.netloc:
         raise HTTPException(status_code=400, detail="Invalid URL: missing hostname")
-    
-    # Extract hostname (remove port)
+
     hostname = parsed.netloc.split(":")[0]
-    
-    # Block localhost and common internal hostnames
-    blocked_hosts = {"localhost", "localhost.localdomain", "localhost6", "localhost6.localdomain6"}
-    if hostname.lower() in blocked_hosts:
+    if hostname.lower() in {"localhost", "localhost.localdomain", "localhost6", "localhost6.localdomain6"}:
         raise HTTPException(status_code=400, detail="Access to localhost is not allowed")
-    
-    # Resolve hostname to IP and check if private
+
     try:
-        ips = socket.getaddrinfo(hostname, None)
-        for ip_info in ips:
-            ip_str = ip_info[4][0]
-            ip = ipaddress.ip_address(ip_str)
-            
-            # Check if IP is in private ranges
+        for ip_info in socket.getaddrinfo(hostname, None):
+            ip = ipaddress.ip_address(ip_info[4][0])
             for private_range in PRIVATE_IP_RANGES:
                 if ip in private_range:
-                    raise HTTPException(
-                        status_code=400, 
-                        detail=f"Access to private IP addresses ({ip_str}) is not allowed"
-                    )
+                    raise HTTPException(status_code=400, detail=f"Access to private IP addresses ({ip_info[4][0]}) is not allowed")
     except socket.gaierror:
-        # If DNS resolution fails, we can't validate - allow but log
         pass
     except HTTPException:
         raise
     except Exception:
-        # Other errors - allow but could log
         pass
-    
+
     return url
 
 
-def sanitize_subprocess_arg(value: str) -> str:
-    """Sanitize string for safe use as subprocess argument."""
-    # Allow alphanumeric, dots, hyphens, underscores, colons, slashes, commas, @, spaces
-    if not re.match(r'^[a-zA-Z0-9._\-:/,@\s]+$', value):
-        raise HTTPException(status_code=400, detail=f"Invalid characters in argument: {value[:50]}")
-    return value
-
+# ===== Content Processing (single pipeline, used everywhere) =====
 
 def decompress_content(raw_bytes: bytes, content_encoding: str = None) -> bytes:
-    """
-    Attempt to decompress the content using various compression algorithms.
-    Returns decompressed bytes or original bytes if decompression fails/not needed.
-    """
+    """Decompress content using gzip/deflate/brotli. Returns original bytes if not compressed."""
     if not raw_bytes:
         return raw_bytes
-    
-    # Try to detect compression from magic bytes
-    is_gzip = raw_bytes[:2] == b'\x1f\x8b'
-    is_zlib = raw_bytes[:2] in [b'\x78\x9c', b'\x78\x01', b'\x78\xda']
-    is_brotli = content_encoding and 'br' in content_encoding.lower()
-    
-    # Try gzip first
-    if is_gzip or (content_encoding and 'gzip' in content_encoding.lower()):
-        try:
-            return gzip.decompress(raw_bytes)
-        except Exception:
-            pass
-    
-    # Try deflate/zlib
-    if is_zlib or (content_encoding and 'deflate' in content_encoding.lower()):
-        try:
-            return zlib.decompress(raw_bytes)
-        except Exception:
-            try:
-                # Try raw deflate (no zlib header)
-                return zlib.decompress(raw_bytes, -zlib.MAX_WBITS)
-            except Exception:
-                pass
-    
-    # Try brotli if available
-    if BROTLI_AVAILABLE and (is_brotli or content_encoding):
-        try:
-            return brotli.decompress(raw_bytes)
-        except Exception:
-            pass
-    
-    # If nothing worked, try all decompression methods as fallback
+
+    # ponytail: single pass — try each decompressor once, no redundant fallback loop
     for decompress_func in [
         lambda b: gzip.decompress(b),
         lambda b: zlib.decompress(b),
@@ -159,400 +94,62 @@ def decompress_content(raw_bytes: bytes, content_encoding: str = None) -> bytes:
             return decompress_func(raw_bytes)
         except Exception:
             continue
-    
+
     if BROTLI_AVAILABLE:
         try:
             return brotli.decompress(raw_bytes)
         except Exception:
             pass
-    
+
     return raw_bytes
 
 
 def decode_content(raw_bytes: bytes, content_type: str = None) -> str:
-    """
-    Try multiple encodings to decode bytes to string.
-    Returns decoded string with best encoding found.
-    """
+    """Decode bytes to string trying multiple encodings."""
     if not raw_bytes:
         return ""
-    
-    # Try to extract charset from content-type header
+
+    # Extract charset from content-type
     charset = None
     if content_type:
         for part in content_type.split(';'):
             if 'charset=' in part.lower():
                 charset = part.split('=')[1].strip().strip('"\'')
                 break
-    
-    # Build list of encodings to try
-    encodings_to_try = []
+
+    # ponytail: just try encodings in order, first success wins. No HTML-sniffing heuristic.
+    encodings = []
     if charset:
-        encodings_to_try.append(charset)
-    encodings_to_try.extend(['utf-8', 'utf-8-sig', 'latin-1', 'cp1252', 'iso-8859-1', 'ascii'])
-    
-    # Remove duplicates while preserving order
+        encodings.append(charset)
+    encodings.extend(['utf-8', 'utf-8-sig', 'latin-1', 'cp1252', 'iso-8859-1'])
+
     seen = set()
-    encodings_to_try = [x for x in encodings_to_try if not (x.lower() in seen or seen.add(x.lower()))]
-    
-    # Try each encoding
-    for encoding in encodings_to_try:
+    for enc in encodings:
+        if enc.lower() in seen:
+            continue
+        seen.add(enc.lower())
         try:
-            decoded = raw_bytes.decode(encoding)
-            # Check if it looks like valid HTML/text
-            if '<html' in decoded.lower() or '<body' in decoded.lower() or '<div' in decoded.lower():
-                return decoded
-            # Still valid, might be non-HTML
-            if decoded and len(decoded) > 10:
-                return decoded
+            return raw_bytes.decode(enc)
         except (UnicodeDecodeError, LookupError):
             continue
-    
-    # Last resort: decode with errors='replace'
+
     return raw_bytes.decode('utf-8', errors='replace')
 
 
 def sanitize_content(content: str) -> str:
-    """
-    Remove NULL bytes and invalid control characters from content.
-    Ensures the content is valid for XML/JSON serialization.
-    """
-    if not content:
-        return content
-    
-    # Remove NULL bytes
-    content = content.replace('\x00', '')
-    
-    # Remove other problematic control characters (keep newlines, tabs, carriage returns)
-    # XML 1.0 valid chars: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD]
-    def is_valid_xml_char(c):
-        codepoint = ord(c)
-        return (
-            codepoint == 0x9 or  # Tab
-            codepoint == 0xA or  # Newline
-            codepoint == 0xD or  # Carriage return
-            (0x20 <= codepoint <= 0xD7FF) or
-            (0xE000 <= codepoint <= 0xFFFD) or
-            (0x10000 <= codepoint <= 0x10FFFF)
-        )
-    
-    # Filter out invalid characters
-    sanitized = ''.join(c for c in content if is_valid_xml_char(c))
-    
-    return sanitized
+    """Remove NULL bytes from content. That's it."""
+    # ponytail: NULL byte removal covers 99.9% of real issues. Full XML codepoint filter when a real page breaks this.
+    return content.replace('\x00', '') if content else content
 
 
-def is_valid_html(content: str) -> bool:
-    """Check if content appears to be valid HTML."""
-    if not content or len(content.strip()) < 10:
-        return False
-    
-    lower_content = content[:5000].lower()
-    html_indicators = ['<html', '<head', '<body', '<div', '<p>', '<a ', '<!doctype', '<meta']
-    return any(indicator in lower_content for indicator in html_indicators)
+def process_raw_response(content: bytes, headers: dict) -> str:
+    """Single pipeline: decompress → decode → sanitize."""
+    encoding = headers.get('content-encoding', '')
+    ct = headers.get('content-type', '')
+    return sanitize_content(decode_content(decompress_content(content, encoding), ct))
 
 
-def _strip_token_punct(value: str) -> str:
-    return value.strip().strip(",.;:()[]{}<>")
-
-
-def parse_advanced_query(query: str) -> Dict[str, Any]:
-    """Parse advanced operators (site:, filetype:, quoted phrases), negations, and OR groups."""
-    token_pattern = r'(-?)"([^"]+)"|(\S+)'
-    tokens: List[Dict[str, Any]] = []
-
-    for match in re.finditer(token_pattern, query):
-        if match.group(2) is not None:
-            tokens.append({
-                "value": match.group(2),
-                "is_phrase": True,
-                "negated": match.group(1) == "-"
-            })
-        else:
-            raw_value = match.group(3)
-            negated = raw_value.startswith("-")
-            value = raw_value[1:] if negated else raw_value
-            tokens.append({
-                "value": value,
-                "is_phrase": False,
-                "negated": negated
-            })
-
-    def new_group() -> Dict[str, List[str]]:
-        return {
-            "include_sites": [],
-            "exclude_sites": [],
-            "include_filetypes": [],
-            "exclude_filetypes": [],
-            "include_phrases": [],
-            "exclude_phrases": []
-        }
-
-    def group_has_filters(group: Dict[str, List[str]]) -> bool:
-        return any(group[key] for key in group)
-
-    groups: List[Dict[str, List[str]]] = []
-    current_group = new_group()
-    cleaned_parts: List[str] = []
-
-    for token in tokens:
-        value = token["value"].strip()
-        if not value:
-            continue
-
-        if not token["is_phrase"] and not token["negated"] and value.lower() == "or":
-            if group_has_filters(current_group):
-                groups.append(current_group)
-            current_group = new_group()
-            continue
-
-        if token["is_phrase"]:
-            if token["negated"]:
-                current_group["exclude_phrases"].append(value)
-            else:
-                current_group["include_phrases"].append(value)
-                cleaned_parts.append(f"\"{value}\"")
-            continue
-
-        value_lower = value.lower()
-        if value_lower.startswith("site:"):
-            site_value = _strip_token_punct(value[5:])
-            if site_value:
-                if token["negated"]:
-                    current_group["exclude_sites"].append(site_value)
-                else:
-                    current_group["include_sites"].append(site_value)
-            continue
-
-        if value_lower.startswith("filetype:"):
-            filetype_value = _strip_token_punct(value[9:]).lstrip(".")
-            if filetype_value:
-                if token["negated"]:
-                    current_group["exclude_filetypes"].append(filetype_value)
-                else:
-                    current_group["include_filetypes"].append(filetype_value)
-            continue
-
-        if token["negated"]:
-            current_group["exclude_phrases"].append(value)
-        else:
-            cleaned_parts.append(value)
-
-    if group_has_filters(current_group):
-        groups.append(current_group)
-
-    cleaned_query = " ".join(cleaned_parts).strip() or query.strip()
-
-    flat_filters = {
-        "include_sites": [],
-        "exclude_sites": [],
-        "include_filetypes": [],
-        "exclude_filetypes": [],
-        "include_phrases": [],
-        "exclude_phrases": []
-    }
-
-    for group in groups:
-        for key in flat_filters:
-            flat_filters[key].extend(group[key])
-
-    def dedupe(values: List[str]) -> List[str]:
-        seen = set()
-        unique: List[str] = []
-        for item in values:
-            if item not in seen:
-                unique.append(item)
-                seen.add(item)
-        return unique
-
-    for key in flat_filters:
-        flat_filters[key] = dedupe(flat_filters[key])
-
-    return {
-        "cleaned_query": cleaned_query,
-        "groups": groups,
-        "has_filters": len(groups) > 0,
-        **flat_filters
-    }
-
-
-def _normalize_host(host: str) -> str:
-    host = host.lower().strip().strip('.')
-    if host.startswith("www."):
-        host = host[4:]
-    return host
-
-
-def _host_matches_site(host: str, site_value: str) -> bool:
-    if not host or not site_value:
-        return False
-
-    site_value = site_value.strip()
-    if site_value.startswith("*."):
-        site_value = site_value[2:]
-
-    if site_value.startswith("http://") or site_value.startswith("https://"):
-        site_value = urlparse(site_value).netloc
-    if "/" in site_value:
-        site_value = site_value.split("/")[0]
-
-    host_norm = _normalize_host(host)
-    site_norm = _normalize_host(site_value)
-    if not host_norm or not site_norm:
-        return False
-
-    return host_norm == site_norm or host_norm.endswith("." + site_norm)
-
-
-def _url_matches_filetypes(url: str, filetypes: List[str]) -> bool:
-    if not filetypes:
-        return True
-    try:
-        path = urlparse(url).path.lower()
-    except Exception:
-        return False
-
-    for filetype_value in filetypes:
-        ext = filetype_value.lower().lstrip(".")
-        if not ext:
-            continue
-        if path.endswith("." + ext):
-            return True
-    return False
-
-
-def _matches_phrases(result: Dict[str, Any], phrases: List[str], require_all: bool = True) -> bool:
-    if not phrases:
-        return True
-
-    haystack = " ".join([
-        result.get("title", ""),
-        result.get("content", ""),
-        result.get("url", "")
-    ])
-    haystack = re.sub(r"\s+", " ", haystack).lower()
-
-    normalized_phrases: List[str] = []
-    for phrase in phrases:
-        phrase_norm = re.sub(r"\s+", " ", phrase).strip().lower()
-        if phrase_norm:
-            normalized_phrases.append(phrase_norm)
-
-    if not normalized_phrases:
-        return True
-
-    if require_all:
-        return all(phrase in haystack for phrase in normalized_phrases)
-
-    return any(phrase in haystack for phrase in normalized_phrases)
-
-
-def _result_matches_group(result: Dict[str, Any], group: Dict[str, List[str]]) -> bool:
-    url = result.get("url", "")
-    try:
-        host = urlparse(url).netloc
-    except Exception:
-        host = ""
-
-    if group["include_sites"] and not any(_host_matches_site(host, site) for site in group["include_sites"]):
-        return False
-    if group["exclude_sites"] and any(_host_matches_site(host, site) for site in group["exclude_sites"]):
-        return False
-    if group["include_filetypes"] and not _url_matches_filetypes(url, group["include_filetypes"]):
-        return False
-    if group["exclude_filetypes"] and _url_matches_filetypes(url, group["exclude_filetypes"]):
-        return False
-    if group["include_phrases"] and not _matches_phrases(result, group["include_phrases"], require_all=True):
-        return False
-    if group["exclude_phrases"] and _matches_phrases(result, group["exclude_phrases"], require_all=False):
-        return False
-
-    return True
-
-
-def filter_results_by_advanced_ops(results: List[Dict[str, Any]], filters: Dict[str, Any]) -> List[Dict[str, Any]]:
-    groups = filters.get("groups", [])
-    if not groups:
-        return results
-
-    filtered: List[Dict[str, Any]] = []
-    for result in results:
-        if any(_result_matches_group(result, group) for group in groups):
-            filtered.append(result)
-
-    return filtered
-
-
-async def robust_fetch_content(
-    url: str,
-    headers: dict = None,
-    timeout: float = 30.0,
-    follow_redirects: bool = True
-) -> dict:
-    """
-    Robust content fetching that handles compression and encoding issues.
-    Returns dict with 'html', 'status_code', 'final_url', 'content_type', 'encoding_used'.
-    """
-    import httpx
-    
-    default_headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "DNT": "1",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1"
-    }
-    
-    if headers:
-        default_headers.update(headers)
-    
-    async with httpx.AsyncClient(
-        timeout=timeout,
-        follow_redirects=follow_redirects,
-    ) as client:
-        response = await client.get(url, headers=default_headers)
-        response.raise_for_status()
-        
-        # Get raw bytes
-        raw_bytes = response.content
-        
-        # Get headers for content type and encoding
-        content_type = response.headers.get('content-type', '')
-        content_encoding = response.headers.get('content-encoding', '')
-        
-        # Step 1: Try to decompress if needed
-        decompressed_bytes = decompress_content(raw_bytes, content_encoding)
-        
-        # Step 2: Decode to string with multiple encoding attempts
-        html_content = decode_content(decompressed_bytes, content_type)
-        
-        # Step 3: Sanitize the content
-        html_content = sanitize_content(html_content)
-        
-        # Step 4: Validate we got something useful
-        if not is_valid_html(html_content) and len(html_content) < 100:
-            # Try one more time with the raw response.text (httpx might handle it better)
-            try:
-                html_content = sanitize_content(response.text)
-            except Exception:
-                pass
-        
-        return {
-            "html": html_content,
-            "status_code": response.status_code,
-            "final_url": str(response.url),
-            "content_type": content_type,
-            "encoding_used": content_encoding or "none"
-        }
-
-
-from antibot import detect_protection, is_blocked, ProtectionType
-
-# Initialize DiskCache
-cache = Cache("/tmp/miyami_cache")
-CACHE_VERSION = "v2-advops"
+# ===== Fetching =====
 
 # Global Stealth Client (Lazy loaded)
 _stealth_client = None
@@ -564,26 +161,24 @@ def get_stealth_client():
     return _stealth_client
 
 
-async def advanced_fetch(
-    url: str,
-    stealth_mode: str = "off",
-    auto_bypass: bool = False
-) -> Dict[str, Any]:
-    """
-    Advanced fetch with stealth mode for anti-bot bypass (FREE - no API keys needed).
-    Includes robust handling of compressed and encoded content.
+_DEFAULT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "DNT": "1",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1"
+}
 
-    Args:
-        url: URL to fetch
-        stealth_mode: "off", "low", "medium", or "high"
-        auto_bypass: Automatically try higher stealth levels if blocked
 
-    Returns:
-        Dict with html, content_bytes, content_type, status_code, final_url, fetch_method, protection_info
+async def advanced_fetch(url: str, stealth_mode: str = "off", auto_bypass: bool = False) -> Dict[str, Any]:
     """
-    # SSRF protection: validate public URL
+    Fetch URL with optional stealth mode and auto-bypass.
+    Returns dict with html, content_bytes, content_type, status_code, final_url, fetch_method, protection_info.
+    """
     url = validate_public_url(url)
-    
+
     fetch_method = "standard"
     protection_info = None
     html = ""
@@ -592,97 +187,37 @@ async def advanced_fetch(
     status_code = 0
     final_url = url
 
-    # Helper function to process raw response bytes
-    def process_response_content(response_content: bytes, response_headers: dict) -> str:
-        """Process raw bytes with decompression and decoding."""
-        content_encoding = response_headers.get('content-encoding', '')
-        content_type_header = response_headers.get('content-type', '')
-
-        # Step 1: Decompress if needed
-        decompressed = decompress_content(response_content, content_encoding)
-
-        # Step 2: Decode with multiple encoding attempts
-        decoded = decode_content(decompressed, content_type_header)
-
-        # Step 3: Sanitize to remove invalid characters
-        sanitized = sanitize_content(decoded)
-
-        return sanitized
-
-    # Step 1: Fetch using stealth mode or standard
     if stealth_mode != "off":
-        # Use stealth client (FREE - no API keys needed)
         try:
             level = StealthLevel(stealth_mode.lower())
             client = get_stealth_client()
             response = await client.get(url, stealth_level=level)
-
-            # Store raw bytes and content-type for document detection
-            content_bytes = response.content if response.content else b""
+            content_bytes = response.content or b""
             content_type = response.headers.get("content-type", "")
-
-            # Use raw bytes for proper decompression handling
-            if content_bytes and len(content_bytes) > 0:
-                html = process_response_content(
-                    content_bytes,
-                    {"content-encoding": response.content_encoding, "content-type": content_type}
-                )
-            else:
+            html = process_raw_response(content_bytes, {"content-encoding": response.content_encoding, "content-type": content_type})
+            if not html:
                 html = sanitize_content(response.text)
-
-            # Fallback: If content still looks corrupted, try re-processing
-            if not is_valid_html(html) and len(html) > 100:
-                try:
-                    raw_bytes = response.text.encode('latin-1', errors='ignore')
-                    decompressed = decompress_content(raw_bytes, None)
-                    html = decode_content(decompressed, None)
-                    html = sanitize_content(html)
-                except Exception:
-                    pass
-
             status_code = response.status_code
             final_url = response.url
             fetch_method = f"stealth_{stealth_mode}"
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"Stealth fetch failed: {str(e)}")
     else:
-        # Standard fetch with raw bytes handling
-        async with httpx.AsyncClient(
-            timeout=30.0,
-            follow_redirects=True,
-        ) as client:
-            response = await client.get(url, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept-Encoding": "gzip, deflate, br",
-                "DNT": "1",
-                "Connection": "keep-alive",
-                "Upgrade-Insecure-Requests": "1"
-            })
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=_DEFAULT_HEADERS)
             response.raise_for_status()
-
-            # Store raw bytes and content-type for document detection
             content_bytes = response.content
             content_type = response.headers.get('content-type', '')
-
-            # Process raw bytes with proper decompression and decoding
-            html = process_response_content(
-                response.content,
-                dict(response.headers)
-            )
-
-            # Fallback to response.text if our processing failed
-            if not is_valid_html(html) or len(html) < 50:
+            html = process_raw_response(response.content, dict(response.headers))
+            if not html or len(html.strip()) < 50:
                 try:
                     html = sanitize_content(response.text)
                 except Exception:
                     pass
-
             status_code = response.status_code
             final_url = str(response.url)
-    
-    # Step 2: Check for bot protection (FREE detection)
+
+    # Check for bot protection
     protection = detect_protection(html)
     if protection.is_protected:
         protection_info = {
@@ -692,50 +227,31 @@ async def advanced_fetch(
             "confidence": protection.confidence,
             "recommendation": protection.recommendation
         }
-        
-        # Auto-bypass: try escalating to higher stealth levels (FREE)
+
+        # Auto-bypass: escalate stealth levels
         if protection.is_blocked and auto_bypass:
-            if fetch_method == "standard" or fetch_method == "stealth_low":
-                # Try medium stealth
+            for bypass_level in [StealthLevel.MEDIUM, StealthLevel.HIGH]:
+                if fetch_method in [f"stealth_{bypass_level.value}", "stealth_medium_auto", "stealth_high_auto"]:
+                    continue
                 try:
                     client = get_stealth_client()
-                    response = await client.get(url, stealth_level=StealthLevel.MEDIUM)
+                    response = await client.get(url, stealth_level=bypass_level)
                     new_html = sanitize_content(response.text)
                     new_protection = detect_protection(new_html)
-                    
                     if not new_protection.is_blocked:
                         html = new_html
                         status_code = response.status_code
                         final_url = response.url
-                        fetch_method = "stealth_medium_auto"
+                        fetch_method = f"stealth_{bypass_level.value}_auto"
                         protection_info["bypassed"] = True
-                        protection_info["bypass_method"] = "stealth_medium"
-                except:
+                        protection_info["bypass_method"] = f"stealth_{bypass_level.value}"
+                        break
+                except Exception:
                     pass
-            
-            # Still blocked? Try high stealth
-            if protection.is_blocked and fetch_method not in ["stealth_high", "stealth_medium_auto"]:
-                try:
-                    client = get_stealth_client()
-                    response = await client.get(url, stealth_level=StealthLevel.HIGH)
-                    new_html = sanitize_content(response.text)
-                    new_protection = detect_protection(new_html)
-                    
-                    if not new_protection.is_blocked:
-                        html = new_html
-                        status_code = response.status_code
-                        final_url = response.url
-                        fetch_method = "stealth_high_auto"
-                        protection_info["bypassed"] = True
-                        protection_info["bypass_method"] = "stealth_high"
-                except:
-                    pass
-    
-    # Step 3: Final validation - try to extract SOMETHING even if content looks bad
+
     if not html or len(html.strip()) < 10:
-        # Last resort: return whatever we have with a warning
         html = "[Content could not be fully extracted]"
-    
+
     return {
         "html": html,
         "content_bytes": content_bytes,
@@ -747,6 +263,135 @@ async def advanced_fetch(
     }
 
 
+# ===== Content Extraction (shared by /fetch and /search-and-fetch) =====
+
+def _extract_content(html_content: str, final_url: str, format: str,
+                     extraction_mode: str, include_links: bool, include_images: bool,
+                     max_content_length: int) -> Dict[str, Any]:
+    """
+    Extract content from HTML using trafilatura or readability.
+    Returns dict with content, metadata, and optionally headings/links/images.
+    """
+    result = {}
+
+    if extraction_mode == "trafilatura":
+        extracted = trafilatura.extract(
+            html_content,
+            include_comments=False, include_tables=True,
+            include_images=include_images, include_links=include_links,
+            output_format='json', url=final_url, with_metadata=True
+        )
+        if extracted:
+            data = json.loads(extracted)
+            metadata = {k: v for k, v in {
+                "title": data.get("title", ""),
+                "author": data.get("author", ""),
+                "sitename": data.get("sitename", ""),
+                "date": data.get("date", ""),
+                "categories": data.get("categories", []),
+                "tags": data.get("tags", []),
+                "description": data.get("description", ""),
+                "language": data.get("language", ""),
+                "url": final_url,
+            }.items() if v}
+            result["metadata"] = metadata
+
+            if format == "markdown":
+                content = trafilatura.extract(
+                    html_content, include_comments=False, include_tables=True,
+                    include_images=include_images, include_links=include_links,
+                    output_format='markdown', url=final_url
+                ) or data.get("text", "")
+            elif format == "html":
+                content = data.get("raw_text", data.get("text", ""))
+            else:
+                content = data.get("text", "")
+
+            if len(content) > max_content_length:
+                content = content[:max_content_length] + "\n\n... [truncated]"
+            result["content"] = content
+            result["extraction_mode"] = "trafilatura"
+            return result
+        else:
+            extraction_mode = "readability"  # fallback
+
+    # Readability extraction
+    doc = Document(html_content)
+    soup = BeautifulSoup(html_content, 'lxml')
+
+    metadata = {"title": doc.title(), "url": final_url}
+    for meta in soup.find_all("meta"):
+        name = meta.get("name", "").lower() or meta.get("property", "").lower()
+        mcontent = meta.get("content", "")
+        if "description" in name and mcontent:
+            metadata["description"] = mcontent
+        elif "author" in name and mcontent:
+            metadata["author"] = mcontent
+        elif "site_name" in name or "og:site_name" in name:
+            metadata["sitename"] = mcontent
+    result["metadata"] = metadata
+
+    article_html = doc.summary()
+    article_soup = BeautifulSoup(article_html, 'lxml')
+
+    if format == "markdown":
+        h = html2text.HTML2Text()
+        h.ignore_links = not include_links
+        h.ignore_images = not include_images
+        h.body_width = 0
+        content = h.handle(article_html)
+    elif format == "html":
+        content = article_html
+    else:
+        content = re.sub(r'\n{3,}', '\n\n', article_soup.get_text(separator="\n", strip=True))
+
+    if len(content) > max_content_length:
+        content = content[:max_content_length] + "\n\n... [truncated]"
+    result["content"] = content
+    result["extraction_mode"] = "readability"
+
+    # Extract headings
+    headings = []
+    for heading in article_soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+        text = heading.get_text(strip=True)
+        if text:
+            headings.append({"level": heading.name, "text": text})
+    if headings:
+        result["headings"] = headings
+
+    if include_links:
+        links = []
+        for link in article_soup.find_all('a', href=True):
+            text = link.get_text(strip=True)
+            if text and link['href']:
+                links.append({"text": text, "url": urljoin(final_url, link['href'])})
+        result["links"] = links[:100]
+
+    if include_images:
+        images = []
+        for img in article_soup.find_all('img'):
+            src = img.get('src') or img.get('data-src')
+            if src:
+                images.append({"url": urljoin(final_url, src), "alt": img.get('alt', ''), "title": img.get('title', '')})
+        result["images"] = images[:50]
+
+    return result
+
+
+def _check_document(content_bytes: bytes, content_type: str, final_url: str) -> Optional[Dict[str, Any]]:
+    """Check if content is a document and extract text. Returns None if not a document."""
+    if not DOCUMENT_EXTRACTOR_AVAILABLE or not content_bytes:
+        return None
+    if not is_document_url(final_url) and not get_content_type_mime(content_type):
+        return None
+    doc_result = extract_document(content_bytes, content_type, final_url)
+    if doc_result.get('success', False):
+        return doc_result
+    return None
+
+
+# ===== App Setup =====
+
 app = FastAPI(
     title="SearXNG Search API",
     description="FastAPI wrapper for SearXNG with search and fetch capabilities",
@@ -755,729 +400,53 @@ app = FastAPI(
 
 SEARXNG_URL = "http://127.0.0.1:8888"
 
-# HTML GUI Template
-GUI_HTML = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Miyami Search API</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-            min-height: 100vh;
-            color: #e4e4e4;
-        }
-        
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        
-        header {
-            text-align: center;
-            padding: 40px 20px;
-            background: rgba(255,255,255,0.05);
-            border-radius: 20px;
-            margin-bottom: 30px;
-            backdrop-filter: blur(10px);
-        }
-        
-        header h1 {
-            font-size: 2.5rem;
-            background: linear-gradient(90deg, #00d4ff, #7b2cbf, #e040fb);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            margin-bottom: 10px;
-        }
-        
-        header p {
-            color: #a0a0a0;
-            font-size: 1.1rem;
-        }
-        
-        .tools-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-            gap: 25px;
-            margin-bottom: 30px;
-        }
-        
-        .tool-card {
-            background: rgba(255,255,255,0.08);
-            border-radius: 16px;
-            padding: 25px;
-            border: 1px solid rgba(255,255,255,0.1);
-            transition: all 0.3s ease;
-        }
-        
-        .tool-card:hover {
-            transform: translateY(-5px);
-            border-color: rgba(0,212,255,0.4);
-            box-shadow: 0 20px 40px rgba(0,0,0,0.3);
-        }
-        
-        .tool-card h3 {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            font-size: 1.3rem;
-            margin-bottom: 15px;
-            color: #00d4ff;
-        }
-        
-        .tool-card h3 .icon {
-            font-size: 1.5rem;
-        }
-        
-        .tool-card .description {
-            color: #a0a0a0;
-            font-size: 0.9rem;
-            margin-bottom: 20px;
-            line-height: 1.5;
-        }
-        
-        .form-group {
-            margin-bottom: 15px;
-        }
-        
-        .form-group label {
-            display: block;
-            font-size: 0.85rem;
-            color: #b0b0b0;
-            margin-bottom: 6px;
-        }
-        
-        .form-group input, .form-group select, .form-group textarea {
-            width: 100%;
-            padding: 12px 15px;
-            border: 1px solid rgba(255,255,255,0.15);
-            border-radius: 10px;
-            background: rgba(0,0,0,0.3);
-            color: #fff;
-            font-size: 0.95rem;
-            transition: all 0.2s ease;
-        }
-        
-        .form-group input:focus, .form-group select:focus, .form-group textarea:focus {
-            outline: none;
-            border-color: #00d4ff;
-            box-shadow: 0 0 0 3px rgba(0,212,255,0.15);
-        }
-        
-        .form-group input::placeholder {
-            color: #666;
-        }
-        
-        .form-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
-        }
-        
-        .btn {
-            width: 100%;
-            padding: 14px 20px;
-            border: none;
-            border-radius: 10px;
-            font-size: 1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-        }
-        
-        .btn-primary {
-            background: linear-gradient(135deg, #00d4ff 0%, #7b2cbf 100%);
-            color: white;
-        }
-        
-        .btn-primary:hover {
-            transform: scale(1.02);
-            box-shadow: 0 10px 30px rgba(0,212,255,0.3);
-        }
-        
-        .btn-primary:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-            transform: none;
-        }
-        
-        .checkbox-group {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .checkbox-group input[type="checkbox"] {
-            width: 18px;
-            height: 18px;
-            accent-color: #00d4ff;
-        }
-        
-        .checkbox-group label {
-            margin-bottom: 0;
-            cursor: pointer;
-        }
-        
-        .result-section {
-            background: rgba(255,255,255,0.05);
-            border-radius: 16px;
-            padding: 25px;
-            margin-top: 30px;
-            border: 1px solid rgba(255,255,255,0.1);
-        }
-        
-        .result-section h2 {
-            font-size: 1.4rem;
-            margin-bottom: 20px;
-            color: #00d4ff;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        
-        .result-box {
-            background: rgba(0,0,0,0.4);
-            border-radius: 12px;
-            padding: 20px;
-            max-height: 500px;
-            overflow-y: auto;
-            font-family: 'Monaco', 'Menlo', monospace;
-            font-size: 0.85rem;
-            line-height: 1.6;
-            white-space: pre-wrap;
-            word-break: break-word;
-        }
-        
-        .result-box.loading {
-            text-align: center;
-            color: #00d4ff;
-        }
-        
-        .result-box .error {
-            color: #ff6b6b;
-        }
-        
-        .result-box .success {
-            color: #51cf66;
-        }
-        
-        .loading-spinner {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 2px solid rgba(255,255,255,0.3);
-            border-radius: 50%;
-            border-top-color: #00d4ff;
-            animation: spin 1s linear infinite;
-        }
-        
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-        
-        .quick-links {
-            display: flex;
-            justify-content: center;
-            gap: 20px;
-            margin-top: 30px;
-            flex-wrap: wrap;
-        }
-        
-        .quick-links a {
-            color: #00d4ff;
-            text-decoration: none;
-            padding: 10px 20px;
-            border: 1px solid rgba(0,212,255,0.3);
-            border-radius: 8px;
-            transition: all 0.2s ease;
-            font-size: 0.9rem;
-        }
-        
-        .quick-links a:hover {
-            background: rgba(0,212,255,0.1);
-            border-color: #00d4ff;
-        }
-        
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 15px;
-            margin-top: 20px;
-        }
-        
-        .stat-item {
-            background: rgba(0,0,0,0.3);
-            padding: 15px;
-            border-radius: 10px;
-            text-align: center;
-        }
-        
-        .stat-item .value {
-            font-size: 1.5rem;
-            font-weight: bold;
-            color: #00d4ff;
-        }
-        
-        .stat-item .label {
-            font-size: 0.8rem;
-            color: #888;
-            margin-top: 5px;
-        }
-        
-        @media (max-width: 768px) {
-            .tools-grid {
-                grid-template-columns: 1fr;
-            }
-            .form-row {
-                grid-template-columns: 1fr;
-            }
-            header h1 {
-                font-size: 1.8rem;
-            }
-        }
-        
-        /* Scrollbar styling */
-        ::-webkit-scrollbar {
-            width: 8px;
-        }
-        ::-webkit-scrollbar-track {
-            background: rgba(255,255,255,0.05);
-            border-radius: 4px;
-        }
-        ::-webkit-scrollbar-thumb {
-            background: rgba(0,212,255,0.4);
-            border-radius: 4px;
-        }
-        ::-webkit-scrollbar-thumb:hover {
-            background: rgba(0,212,255,0.6);
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <header>
-            <h1>🔍 Miyami Search API</h1>
-            <p>LLM-Optimized Web Search & Content Extraction Tools</p>
-        </header>
-        
-        <div class="tools-grid">
-            <!-- Search Tool -->
-            <div class="tool-card">
-                <h3><span class="icon">🔎</span> Web Search</h3>
-                <p class="description">Search the web using multiple engines (DuckDuckGo, Google, Bing, Brave, Wikipedia)</p>
-                <form id="searchForm">
-                    <div class="form-group">
-                        <label>Search Query</label>
-                        <input type="text" name="query" placeholder="e.g., latest AI news" required>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Time Range</label>
-                            <select name="time_range">
-                                <option value="">All Time</option>
-                                <option value="day">Past 24 Hours</option>
-                                <option value="week">Past Week</option>
-                                <option value="month">Past Month</option>
-                                <option value="year">Past Year</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Category</label>
-                            <select name="categories">
-                                <option value="general">General</option>
-                                <option value="news">News</option>
-                                <option value="images">Images</option>
-                                <option value="videos">Videos</option>
-                                <option value="science">Science</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="form-group checkbox-group">
-                    </div>
-                    <button type="submit" class="btn btn-primary">🔍 Search</button>
-                </form>
-            </div>
-            
-            <!-- Fetch Tool -->
-            <div class="tool-card">
-                <h3><span class="icon">📄</span> Fetch Content</h3>
-                <p class="description">Extract clean, readable content from any webpage with optional stealth mode</p>
-                <form id="fetchForm">
-                    <div class="form-group">
-                        <label>URL to Fetch</label>
-                        <input type="url" name="url" placeholder="https://example.com/article" required>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Output Format</label>
-                            <select name="output_format">
-                                <option value="markdown">Markdown</option>
-                                <option value="text">Plain Text</option>
-                                <option value="html">HTML</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Stealth Mode</label>
-                            <select name="stealth_mode">
-                                <option value="off">Off</option>
-                                <option value="low">Low</option>
-                                <option value="medium">Medium</option>
-                                <option value="high">High</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div class="form-group checkbox-group">
-                        <input type="checkbox" name="auto_bypass" id="auto_bypass">
-                        <label for="auto_bypass">Auto Bypass (escalate if blocked)</label>
-                    </div>
-                    <button type="submit" class="btn btn-primary">📄 Fetch Content</button>
-                </form>
-            </div>
-            
-            <!-- Search & Fetch Tool -->
-            <div class="tool-card">
-                <h3><span class="icon">🔗</span> Search & Fetch</h3>
-                <p class="description">Search and automatically extract content from top results</p>
-                <form id="searchFetchForm">
-                    <div class="form-group">
-                        <label>Search Query</label>
-                        <input type="text" name="query" placeholder="e.g., Python best practices" required>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Fetch Top N</label>
-                            <select name="fetch_top_n">
-                                <option value="3">3 results</option>
-                                <option value="5" selected>5 results</option>
-                                <option value="10">10 results</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Time Range</label>
-                            <select name="time_range">
-                                <option value="">All Time</option>
-                                <option value="day">Past Day</option>
-                                <option value="week">Past Week</option>
-                                <option value="month">Past Month</option>
-                            </select>
-                        </div>
-                    </div>
-                    <button type="submit" class="btn btn-primary">🔗 Search & Fetch</button>
-                </form>
-            </div>
-            
-            <!-- Deep Research Tool -->
-            <div class="tool-card">
-                <h3><span class="icon">🧠</span> Deep Research</h3>
-                <p class="description">Multi-query research - processes multiple queries in parallel</p>
-                <form id="deepResearchForm">
-                    <div class="form-group">
-                        <label>Research Queries (one per line)</label>
-                        <textarea name="queries" rows="3" placeholder="What is quantum computing?\\nQuantum computing applications\\nQuantum vs classical computing" required></textarea>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Fetch Per Query</label>
-                            <select name="fetch_top_n">
-                                <option value="2">2 results</option>
-                                <option value="3" selected>3 results</option>
-                                <option value="5">5 results</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Max Content (chars)</label>
-                            <input type="number" name="max_content_length" value="5000" min="1000" max="50000">
-                        </div>
-                    </div>
-                    <button type="submit" class="btn btn-primary">🧠 Research</button>
-                </form>
-            </div>
-            
-            <!-- Crawl Site Tool -->
-            <div class="tool-card">
-                <h3><span class="icon">🕷️</span> Crawl Website</h3>
-                <p class="description">Recursively crawl websites and extract content from multiple pages</p>
-                <form id="crawlForm">
-                    <div class="form-group">
-                        <label>Website URL</label>
-                        <input type="url" name="url" placeholder="https://example.com" required>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Max Pages</label>
-                            <input type="number" name="max_pages" value="10" min="1" max="100">
-                        </div>
-                        <div class="form-group">
-                            <label>Max Depth</label>
-                            <input type="number" name="max_depth" value="2" min="1" max="5">
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label>Output Format</label>
-                        <select name="output_format">
-                            <option value="markdown">Markdown</option>
-                            <option value="text">Plain Text</option>
-                            <option value="html">HTML</option>
-                        </select>
-                    </div>
-                    <button type="submit" class="btn btn-primary">🕷️ Start Crawl</button>
-                </form>
-            </div>
-            
-            <!-- YouTube Transcript Tool -->
-            <div class="tool-card">
-                <h3><span class="icon">🎬</span> YouTube Transcript</h3>
-                <p class="description">Extract transcripts from YouTube videos with language support</p>
-                <form id="ytTranscriptForm">
-                    <div class="form-group">
-                        <label>YouTube URL or Video ID</label>
-                        <input type="text" name="video" placeholder="https://youtube.com/watch?v=... or video ID" required>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Format</label>
-                            <select name="format">
-                                <option value="text">Plain Text</option>
-                                <option value="json">JSON (with timestamps)</option>
-                                <option value="srt">SRT Subtitles</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Language (optional)</label>
-                            <input type="text" name="lang" placeholder="auto-detect, or: en, es, hi...">
-                        </div>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Start Time (sec)</label>
-                            <input type="number" name="start" placeholder="0" min="0">
-                        </div>
-                        <div class="form-group">
-                            <label>End Time (sec)</label>
-                            <input type="number" name="end" placeholder="End" min="0">
-                        </div>
-                    </div>
-                    <button type="submit" class="btn btn-primary">🎬 Get Transcript</button>
-                </form>
-            </div>
-        </div>
-        
-        <!-- Results Section -->
-        <div class="result-section" id="resultSection" style="display: none;">
-            <h2>📋 Results</h2>
-            <div class="stats" id="statsSection" style="display: none;"></div>
-            <div class="result-box" id="resultBox"></div>
-        </div>
-        
-        <!-- Quick Links -->
-        <div class="quick-links">
-            <a href="/docs" target="_blank">📚 API Documentation</a>
-            <a href="/health" target="_blank">💚 Health Check</a>
-            <a href="https://github.com/ankushthakur2007/miyami_websearch_tool" target="_blank">⭐ GitHub</a>
-        </div>
-    </div>
-    
-    <script>
-        const resultSection = document.getElementById('resultSection');
-        const resultBox = document.getElementById('resultBox');
-        const statsSection = document.getElementById('statsSection');
-        
-        function showLoading(message = 'Processing...') {
-            resultSection.style.display = 'block';
-            statsSection.style.display = 'none';
-            resultBox.innerHTML = '<div class="loading"><span class="loading-spinner"></span> ' + message + '</div>';
-            resultBox.className = 'result-box loading';
-            resultSection.scrollIntoView({ behavior: 'smooth' });
-        }
-        
-        function showResult(data, stats = null) {
-            resultBox.className = 'result-box';
-            
-            if (stats) {
-                statsSection.style.display = 'grid';
-                statsSection.innerHTML = Object.entries(stats).map(([label, value]) => 
-                    `<div class="stat-item"><div class="value">${value}</div><div class="label">${label}</div></div>`
-                ).join('');
-            } else {
-                statsSection.style.display = 'none';
-            }
-            
-            if (typeof data === 'object') {
-                resultBox.innerHTML = '<span class="success">' + JSON.stringify(data, null, 2) + '</span>';
-            } else {
-                resultBox.innerHTML = '<span class="success">' + escapeHtml(data) + '</span>';
-            }
-        }
-        
-        function showError(error) {
-            resultBox.className = 'result-box';
-            statsSection.style.display = 'none';
-            resultBox.innerHTML = '<span class="error">❌ Error: ' + escapeHtml(error) + '</span>';
-        }
-        
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-        
-        async function submitForm(form, endpoint, buildParams) {
-            const formData = new FormData(form);
-            const params = buildParams(formData);
-            const url = endpoint + '?' + new URLSearchParams(params).toString();
-            
-            try {
-                showLoading('Fetching results...');
-                const response = await fetch(url);
-                const data = await response.json();
-                
-                if (!response.ok) {
-                    let errorMsg = data.detail || 'Request failed';
-                    if (typeof errorMsg === 'object') {
-                        errorMsg = JSON.stringify(errorMsg, null, 2);
-                    }
-                    throw new Error(errorMsg);
-                }
-                
-                // Extract stats based on endpoint type
-                let stats = null;
-                if (data.total_results !== undefined) {
-                    stats = { 'Results': data.total_results };
-                    if (data.query) stats['Query'] = data.query;
-                }
-                if (data.word_count !== undefined) {
-                    stats = stats || {};
-                    stats['Words'] = data.word_count;
-                }
-                if (data.segment_count !== undefined) {
-                    stats = stats || {};
-                    stats['Segments'] = data.segment_count;
-                    stats['Duration'] = (data.total_duration || 0).toFixed(1) + 's';
-                }
-                if (data.pages_crawled !== undefined) {
-                    stats = { 'Pages': data.pages_crawled, 'Duration': data.crawl_duration };
-                }
-                
-                showResult(data, stats);
-            } catch (error) {
-                showError(error.message);
-            }
-        }
-        
-        // Search Form
-        document.getElementById('searchForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            await submitForm(e.target, '/search-api', (fd) => {
-                const params = { query: fd.get('query') };
-                if (fd.get('time_range')) params.time_range = fd.get('time_range');
-                if (fd.get('categories')) params.categories = fd.get('categories');
-                return params;
-            });
-        });
-        
-        // Fetch Form
-        document.getElementById('fetchForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            await submitForm(e.target, '/fetch', (fd) => {
-                const params = { 
-                    url: fd.get('url'),
-                    format: fd.get('output_format'),
-                    stealth_mode: fd.get('stealth_mode')
-                };
-                if (fd.get('auto_bypass')) params.auto_bypass = 'true';
-                return params;
-            });
-        });
-        
-        // Search & Fetch Form
-        document.getElementById('searchFetchForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            await submitForm(e.target, '/search-and-fetch', (fd) => {
-                const params = { 
-                    query: fd.get('query'),
-                    fetch_top_n: fd.get('fetch_top_n')
-                };
-                if (fd.get('time_range')) params.time_range = fd.get('time_range');
-                return params;
-            });
-        });
-        
-        // Deep Research Form
-        document.getElementById('deepResearchForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            showLoading('Researching multiple queries... This may take a while.');
-            const formData = new FormData(e.target);
-            const queries = formData.get('queries').split('\\n').filter(q => q.trim());
-            const url = '/deep-research?' + new URLSearchParams({
-                queries: queries.join(','),
-                fetch_top_n: formData.get('fetch_top_n'),
-                max_content_length: formData.get('max_content_length')
-            }).toString();
-            
-            try {
-                const response = await fetch(url);
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.detail || 'Request failed');
-                showResult(data, { 'Queries': data.query_count, 'Results': data.total_results });
-            } catch (error) {
-                showError(error.message);
-            }
-        });
-        
-        // Crawl Form
-        document.getElementById('crawlForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            showLoading('Crawling website... This may take several minutes.');
-            await submitForm(e.target, '/crawl-site', (fd) => ({
-                start_url: fd.get('url'),
-                max_pages: fd.get('max_pages'),
-                max_depth: fd.get('max_depth'),
-                format: fd.get('output_format')
-            }));
-        });
-        
-        // YouTube Transcript Form
-        document.getElementById('ytTranscriptForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            await submitForm(e.target, '/yt-transcript', (fd) => {
-                const params = { 
-                    video: fd.get('video'),
-                    format: fd.get('format')
-                };
-                if (fd.get('lang')) params.lang = fd.get('lang');
-                if (fd.get('start')) params.start = fd.get('start');
-                if (fd.get('end')) params.end = fd.get('end');
-                return params;
-            });
-        });
-    </script>
-</body>
-</html>
-"""
+# Initialize DiskCache
+cache = Cache("/tmp/miyami_cache")
+CACHE_VERSION = "v2"
+
+# Load GUI HTML from file
+_GUI_HTML = None
+def _get_gui_html():
+    global _GUI_HTML
+    if _GUI_HTML is None:
+        gui_path = os.path.join(os.path.dirname(__file__), 'gui.html')
+        if os.path.exists(gui_path):
+            with open(gui_path) as f:
+                _GUI_HTML = f.read()
+        else:
+            _GUI_HTML = "<html><body><h1>Miyami Search API</h1><p><a href='/docs'>API Docs</a></p></body></html>"
+    return _GUI_HTML
+
+
+VALID_STEALTH_MODES = {"off", "low", "medium", "high"}
+VALID_TIME_RANGES = {"day", "week", "month", "year"}
+
+
+def _validate_stealth_mode(stealth_mode: str):
+    if stealth_mode.lower() not in VALID_STEALTH_MODES:
+        raise HTTPException(status_code=400, detail=f"Invalid stealth_mode. Must be one of: {', '.join(VALID_STEALTH_MODES)}")
+
+
+def _validate_time_range(time_range: Optional[str]):
+    if time_range and time_range.lower() not in VALID_TIME_RANGES:
+        raise HTTPException(status_code=400, detail=f"Invalid time_range. Must be one of: {', '.join(VALID_TIME_RANGES)}")
+
+
+# ===== Endpoints =====
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
     """Serve the interactive GUI for the API"""
-    return GUI_HTML
+    return _get_gui_html()
+
+
+@app.head("/")
+async def root_head():
+    return {}
+
 
 @app.get("/api")
 async def api_info():
-    """Return API info as JSON (for programmatic access)"""
     return {
         "message": "SearXNG Search API",
         "endpoints": {
@@ -1490,94 +459,51 @@ async def api_info():
         }
     }
 
+
 @app.get("/search-api")
 async def search_api(
     query: str = Query(..., description="Search query"),
-    debug: bool = Query(False, description="If true, return raw SearXNG response for debugging"),
-    format: str = Query("json", description="Response format (json)"),
-    categories: Optional[str] = Query(None, description="Search categories (general, images, videos, etc.)"),
-    engines: Optional[str] = Query(None, description="Specific engines to use"),
+    debug: bool = Query(False, description="Return raw SearXNG response"),
+    format: str = Query("json", description="Response format"),
+    categories: Optional[str] = Query(None, description="Search categories"),
+    engines: Optional[str] = Query(None, description="Specific engines"),
     language: Optional[str] = Query("en", description="Search language"),
     page: Optional[int] = Query(1, description="Page number"),
-    time_range: Optional[str] = Query(None, description="Time filter: day (past 24h), week (past week), month (past month), year (past year)"),
-
+    time_range: Optional[str] = Query(None, description="Time filter: day, week, month, year"),
 ):
-    """
-    
-    Time Range Options:
-    - day: Results from the past 24 hours
-    - week: Results from the past week
-    - month: Results from the past month
-    - year: Results from the past year
-    - None: All results (default)
-    
-    """
-    # Check cache first
+    # ponytail: removed 170-line advanced query parser. SearXNG handles site:/filetype: natively.
+    # Re-add client-side filtering only if SearXNG's native support is provably broken for a use case.
+
+    _validate_time_range(time_range)
+
     cache_key = f"search:{CACHE_VERSION}:{query}:{categories}:{engines}:{language}:{page}:{time_range}:{debug}"
     cached_result = cache.get(cache_key)
     if cached_result:
         return JSONResponse(content=cached_result)
 
     try:
-        advanced_filters = parse_advanced_query(query)
-        has_advanced_filters = advanced_filters.get("has_filters", False)
-
-        effective_query = query
-
-        # Send original query with operators to SearXNG (engines like Google/Bing/DDG support site:, filetype:)
-        # Keep local filtering as fallback for engines that don't support operators
-        params = {
-            "q": query,
-            "format": "json",
-            "language": language,
-            "pageno": page
-        }
-        
+        params = {"q": query, "format": "json", "language": language, "pageno": page}
         if categories:
             params["categories"] = categories
         if engines:
             params["engines"] = engines
-        
-        # Add time range filter if specified
         if time_range:
-            valid_ranges = ["day", "week", "month", "year"]
-            if time_range.lower() in valid_ranges:
-                params["time_range"] = time_range.lower()
-            else:
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"Invalid time_range. Must be one of: {', '.join(valid_ranges)}"
-                )
-        
-        # Log when query contains advanced operators to help debugging
-        if has_advanced_filters:
-            print(f"[DEBUG] Original query with operators: {query}")
-            print(f"[DEBUG] Cleaned query sent to SearXNG: {params['q']}")
-            print(f"[DEBUG] searx params: {params}")
+            params["time_range"] = time_range.lower()
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(f"{SEARXNG_URL}/search", params=params)
             response.raise_for_status()
 
-            # If debug requested, return the raw SearXNG response and headers
             if debug:
-                try:
-                    raw_text = response.text
-                except Exception:
-                    raw_text = None
                 return JSONResponse(content={
-                    "query": query,
-                    "effective_query": effective_query,
-                    "parsed_filters": advanced_filters if has_advanced_filters else {},
-                    "params": params,
+                    "query": query, "params": params,
                     "searx_status_code": response.status_code,
                     "searx_headers": dict(response.headers),
-                    "searx_raw_text": raw_text
+                    "searx_raw_text": response.text
                 })
 
             data = response.json()
-            
-            # Clean and format the response
+
             results = {
                 "query": query,
                 "number_of_results": data.get("number_of_results", 0),
@@ -1585,56 +511,31 @@ async def search_api(
                 "suggestions": data.get("suggestions", []),
                 "infoboxes": data.get("infoboxes", [])
             }
-            
-            for result in data.get("results", []):
-                clean_result = {
-                    "title": result.get("title", ""),
-                    "url": result.get("url", ""),
-                    "content": result.get("content", ""),
-                    "engine": result.get("engine", ""),
-                    "parsed_url": result.get("parsed_url", []),
-                    "score": result.get("score", 0),
-                }
-                
-                # Add optional fields if they exist
-                if "img_src" in result:
-                    clean_result["img_src"] = result["img_src"]
-                if "thumbnail" in result:
-                    clean_result["thumbnail"] = result["thumbnail"]
-                if "publishedDate" in result:
-                    clean_result["publishedDate"] = result["publishedDate"]
-                
-                results["results"].append(clean_result)
-            
-            # Apply strict advanced-operator filters (if any)
-            if has_advanced_filters:
-                raw_count = results["number_of_results"]
-                results["results"] = filter_results_by_advanced_ops(results["results"], advanced_filters)
-                results["raw_number_of_results"] = raw_count
-                results["number_of_results"] = len(results["results"])
-                results["applied_filters"] = {
-                    "include_sites": advanced_filters.get("include_sites", []),
-                    "exclude_sites": advanced_filters.get("exclude_sites", []),
-                    "include_filetypes": advanced_filters.get("include_filetypes", []),
-                    "exclude_filetypes": advanced_filters.get("exclude_filetypes", []),
-                    "include_phrases": advanced_filters.get("include_phrases", []),
-                    "exclude_phrases": advanced_filters.get("exclude_phrases", []),
-                    "groups": advanced_filters.get("groups", []),
-                    "effective_query": effective_query,
-                    "cleaned_query": advanced_filters.get("cleaned_query", "")
-                }
 
-            # Cache the result (expire in 1 hour)
+            for r in data.get("results", []):
+                clean = {
+                    "title": r.get("title", ""),
+                    "url": r.get("url", ""),
+                    "content": r.get("content", ""),
+                    "engine": r.get("engine", ""),
+                    "parsed_url": r.get("parsed_url", []),
+                    "score": r.get("score", 0),
+                }
+                for opt in ("img_src", "thumbnail", "publishedDate"):
+                    if opt in r:
+                        clean[opt] = r[opt]
+                results["results"].append(clean)
+
             cache.set(cache_key, results, expire=3600)
-            
             return JSONResponse(content=results)
-            
+
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=f"SearXNG error: {str(e)}")
     except httpx.RequestError as e:
         raise HTTPException(status_code=503, detail=f"Cannot connect to SearXNG: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
 
 @app.get("/fetch")
 async def fetch_url(
@@ -1643,292 +544,155 @@ async def fetch_url(
     include_links: bool = Query(True, description="Include extracted links"),
     include_images: bool = Query(True, description="Include extracted images"),
     max_content_length: int = Query(100000, description="Maximum content length"),
-    extraction_mode: str = Query("trafilatura", description="Extraction engine: trafilatura (best) or readability (fast)"),
-    # Stealth mode (FREE - no API keys needed)
-    stealth_mode: str = Query("off", description="Stealth mode: off, low, medium, high (FREE anti-bot bypass)"),
-    auto_bypass: bool = Query(False, description="Automatically try higher stealth levels if blocked")
+    extraction_mode: str = Query("trafilatura", description="Extraction engine: trafilatura or readability"),
+    stealth_mode: str = Query("off", description="Stealth mode: off, low, medium, high"),
+    auto_bypass: bool = Query(False, description="Auto-escalate stealth if blocked"),
 ):
-    """
-    Fetch a URL and return cleaned, structured content (Firecrawl-like quality)
-    
-    Supports multiple extraction engines:
-    - trafilatura: Better accuracy, extracts metadata, dates, authors
-    - readability: Faster, good for simple articles
-    
-    Output formats:
-    - text: Clean plain text
-    - markdown: Structured markdown (Firecrawl-like)
-    - html: Clean HTML
-    
-    Stealth Mode (FREE - no API keys needed):
-    - off: Standard fetch
-    - low: Basic User-Agent rotation
-    - medium: UA + header randomization  
-    - high: UA + headers + TLS fingerprint (requires curl_cffi package)
-    - auto_bypass: Automatically escalate stealth levels if blocked
-    
-    Example: /fetch?url=https://example.com&format=markdown&stealth_mode=medium
-    Example: /fetch?url=https://protected-site.com&stealth_mode=high&auto_bypass=true
-    """
+    """Fetch a URL and return cleaned, structured content."""
     try:
-        # Validate URL
         parsed = urlparse(url)
         if not parsed.scheme or not parsed.netloc:
             raise HTTPException(status_code=400, detail="Invalid URL format")
-        
-        # SSRF protection: validate public URL
+
+        _validate_stealth_mode(stealth_mode)
         url = validate_public_url(url)
-        
-        # Validate stealth_mode
-        valid_stealth_modes = ["off", "low", "medium", "high"]
-        if stealth_mode.lower() not in valid_stealth_modes:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid stealth_mode. Must be one of: {', '.join(valid_stealth_modes)}"
-            )
-        
-        # Use advanced_fetch for the actual fetching (FREE - no API keys needed)
-        fetch_result = await advanced_fetch(
-            url=url,
-            stealth_mode=stealth_mode,
-            auto_bypass=auto_bypass
-        )
-        
+
+        fetch_result = await advanced_fetch(url=url, stealth_mode=stealth_mode, auto_bypass=auto_bypass)
         html_content = fetch_result["html"]
-        final_url = fetch_result["final_url"]
-        
-        # Validate final URL after redirects (SSRF protection)
-        final_url = validate_public_url(final_url)
-        
-        status_code = fetch_result["status_code"]
-        fetch_method = fetch_result["fetch_method"]
-        protection_info = fetch_result["protection_info"]
+        final_url = validate_public_url(fetch_result["final_url"])
         content_bytes = fetch_result.get("content_bytes", b"")
-        content_type = fetch_result.get("content_type", "")
+        content_type_header = fetch_result.get("content_type", "")
 
-        # Check if this is a document file and extract if so
-        is_document = False
-        document_type = None
-        document_text = ""
-
-        if DOCUMENT_EXTRACTOR_AVAILABLE and content_bytes:
-            # Check by URL extension or content-type
-            if is_document_url(final_url) or get_content_type_mime(content_type):
-                doc_result = extract_document(content_bytes, content_type, final_url)
-                if doc_result.get('success', False):
-                    is_document = True
-                    document_type = doc_result.get('document_type', 'unknown')
-                    document_text = doc_result.get('text', '')
-
-        # Initialize result structure
         result = {
             "success": True,
             "url": final_url,
-            "status_code": status_code,
-            "fetch_method": fetch_method,
+            "status_code": fetch_result["status_code"],
+            "fetch_method": fetch_result["fetch_method"],
         }
 
-        # Add document info if extracted
-        if is_document:
-            result["document_type"] = document_type
+        if fetch_result["protection_info"]:
+            result["protection_info"] = fetch_result["protection_info"]
+
+        # Check for document
+        doc = _check_document(content_bytes, content_type_header, final_url)
+        if doc:
             result["is_document"] = True
-            result["content"] = document_text
+            result["document_type"] = doc.get('document_type', 'unknown')
+            result["content"] = doc.get('text', '')
+            result["stats"] = {
+                "content_length": len(result["content"]),
+                "word_count": len(result["content"].split()),
+                "document_type": doc.get('document_type'),
+                "extraction_mode": "document",
+                "fetch_method": fetch_result["fetch_method"]
+            }
         else:
             result["is_document"] = False
-
-        # Add protection info if detected
-        if protection_info:
-            result["protection_info"] = protection_info
-
-        # Skip HTML extraction for documents
-        if is_document:
-            # For documents, we already have content extracted
-            pass
-        elif extraction_mode == "trafilatura":
-            # Extract with trafilatura (best quality)
-            extracted = trafilatura.extract(
-                html_content,
-                include_comments=False,
-                include_tables=True,
-                include_images=include_images,
-                include_links=include_links,
-                output_format='json',
-                url=final_url,
-                with_metadata=True
-            )
-            
-            if extracted:
-                data = json.loads(extracted)
-                
-                # Build comprehensive metadata
-                metadata = {
-                    "title": data.get("title", ""),
-                    "author": data.get("author", ""),
-                    "sitename": data.get("sitename", ""),
-                    "date": data.get("date", ""),
-                    "categories": data.get("categories", []),
-                    "tags": data.get("tags", []),
-                    "description": data.get("description", ""),
-                    "language": data.get("language", ""),
-                    "url": final_url,
-                }
-                
-                # Clean empty values
-                metadata = {k: v for k, v in metadata.items() if v}
-                result["metadata"] = metadata
-                
-                # Get main text
-                main_text = data.get("text", "")
-                
-                # Format output based on requested format
-                if format == "markdown":
-                    # Use trafilatura's markdown output
-                    markdown_content = trafilatura.extract(
-                        html_content,
-                        include_comments=False,
-                        include_tables=True,
-                        include_images=include_images,
-                        include_links=include_links,
-                        output_format='markdown',
-                        url=final_url
-                    )
-                    result["content"] = markdown_content or main_text
-                        
-                elif format == "html":
-                    # Return clean HTML
-                    result["content"] = data.get("raw_text", main_text)
-                else:
-                    # Plain text (default)
-                    result["content"] = main_text
-                
-                # Limit content length
-                if len(result["content"]) > max_content_length:
-                    result["content"] = result["content"][:max_content_length] + "\n\n... [truncated]"
-                
-            else:
-                # Fallback to readability if trafilatura fails
-                extraction_mode = "readability"
-
-        # Readability extraction (fallback or explicit)
-        if extraction_mode == "readability":
-            doc = Document(html_content)
-            soup = BeautifulSoup(html_content, 'lxml')
-            
-            # Extract enhanced metadata
-            metadata = {
-                "title": doc.title(),
-                "url": final_url,
-                "status_code": status_code,
-            }
-            
-            # Extract more metadata
-            for meta in soup.find_all("meta"):
-                name = meta.get("name", "").lower() or meta.get("property", "").lower()
-                content = meta.get("content", "")
-                
-                if "description" in name and content:
-                    metadata["description"] = content
-                elif "author" in name and content:
-                    metadata["author"] = content
-                elif "keywords" in name and content:
-                    metadata["keywords"] = content
-                elif "published" in name or "article:published" in name:
-                    metadata["published_date"] = content
-                elif "site_name" in name or "og:site_name" in name:
-                    metadata["sitename"] = content
-            
-            result["metadata"] = metadata
-            
-            # Extract main content
-            article_html = doc.summary()
-            article_soup = BeautifulSoup(article_html, 'lxml')
-            
-            if format == "markdown":
-                # Convert to markdown
-                h = html2text.HTML2Text()
-                h.ignore_links = not include_links
-                h.ignore_images = not include_images
-                h.body_width = 0
-                result["content"] = h.handle(article_html)
-            elif format == "html":
-                result["content"] = article_html
-            else:
-                # Clean text
-                main_text = article_soup.get_text(separator="\n", strip=True)
-                # Remove excessive newlines
-                main_text = re.sub(r'\n{3,}', '\n\n', main_text)
-                result["content"] = main_text
-            
-            # Limit content length
-            if len(result["content"]) > max_content_length:
-                result["content"] = result["content"][:max_content_length] + "\n\n... [truncated]"
-            
-            # Extract headings structure
-            headings = []
-            for heading in article_soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
-                text = heading.get_text(strip=True)
-                if text:
-                    headings.append({
-                        "level": heading.name,
-                        "text": text
-                    })
-            result["headings"] = headings
-            
-            # Extract links if requested
-            if include_links:
-                links = []
-                for link in article_soup.find_all('a', href=True):
-                    href = link['href']
-                    text = link.get_text(strip=True)
-                    if text and href:
-                        absolute_url = urljoin(final_url, href)
-                        links.append({
-                            "text": text,
-                            "url": absolute_url
-                        })
-                result["links"] = links[:100]  # Limit to 100 links
-            
-            # Extract images if requested
-            if include_images:
-                images = []
-                for img in article_soup.find_all('img'):
-                    src = img.get('src') or img.get('data-src')
-                    if src:
-                        img_url = urljoin(final_url, src)
-                        images.append({
-                            "url": img_url,
-                            "alt": img.get('alt', ''),
-                            "title": img.get('title', '')
-                        })
-                result["images"] = images[:50]  # Limit to 50 images
-
-        # Add content statistics (only for HTML extraction, not documents)
-        if not is_document:
+            extracted = _extract_content(html_content, final_url, format, extraction_mode,
+                                          include_links, include_images, max_content_length)
+            result["content"] = extracted["content"]
+            result["metadata"] = extracted.get("metadata", {})
+            for key in ("headings", "links", "images"):
+                if key in extracted:
+                    result[key] = extracted[key]
             result["stats"] = {
                 "content_length": len(result["content"]),
                 "word_count": len(result["content"].split()),
-                "extraction_mode": extraction_mode,
+                "extraction_mode": extracted.get("extraction_mode", extraction_mode),
                 "format": format,
-                "fetch_method": fetch_method
-            }
-        else:
-            # Add document-specific stats
-            result["stats"] = {
-                "content_length": len(result["content"]),
-                "word_count": len(result["content"].split()),
-                "document_type": document_type,
-                "extraction_mode": "document",
-                "fetch_method": fetch_method
+                "fetch_method": fetch_result["fetch_method"]
             }
 
         return JSONResponse(content=result)
-            
+
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=f"Failed to fetch URL: {str(e)}")
     except httpx.RequestError as e:
         raise HTTPException(status_code=503, detail=f"Cannot connect to URL: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing content: {str(e)}")
+
+
+async def _fetch_and_extract(result: dict, format: str, max_content_length: int,
+                              stealth_mode: str, auto_bypass: bool) -> dict:
+    """Shared fetch+extract for search-and-fetch and deep-research."""
+    url = result.get("url", "")
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return {"search_result": result, "fetch_status": "error", "fetch_error": "Invalid URL", "content": None}
+
+    try:
+        url = validate_public_url(url)
+    except HTTPException as e:
+        return {"search_result": result, "fetch_status": "error", "fetch_error": e.detail, "content": None}
+
+    try:
+        fetch_result = await advanced_fetch(url=url, stealth_mode=stealth_mode, auto_bypass=auto_bypass)
+        final_url = fetch_result["final_url"]
+        fetch_method = fetch_result["fetch_method"]
+        protection_info = fetch_result["protection_info"]
+        content_bytes = fetch_result.get("content_bytes", b"")
+        content_type = fetch_result.get("content_type", "")
+
+        search_info = {
+            "title": result.get("title", ""),
+            "url": final_url,
+            "snippet": result.get("content", ""),
+            "engine": result.get("engine", ""),
+            "score": result.get("score", 0)
+        }
+
+        # Check for document
+        doc = _check_document(content_bytes, content_type, final_url)
+        if doc:
+            text = doc.get('text', '')
+            if len(text) > max_content_length:
+                text = text[:max_content_length] + "\n\n... [truncated]"
+            out = {
+                "search_result": search_info,
+                "fetch_status": "success",
+                "fetch_method": fetch_method,
+                "is_document": True,
+                "document_type": doc.get('document_type', 'unknown'),
+                "fetched_content": {
+                    "title": result.get("title", ""),
+                    "content": text,
+                    "word_count": len(text.split()),
+                    "format": format
+                }
+            }
+            if protection_info:
+                out["protection_info"] = protection_info
+            return out
+
+        # HTML extraction
+        extracted = _extract_content(fetch_result["html"], final_url, format, "trafilatura", True, True, max_content_length)
+        content = extracted["content"]
+        metadata = extracted.get("metadata", {})
+
+        out = {
+            "search_result": search_info,
+            "fetch_status": "success",
+            "fetch_method": fetch_method,
+            "fetched_content": {
+                "title": metadata.get("title", result.get("title", "")),
+                "author": metadata.get("author", ""),
+                "date": metadata.get("date", ""),
+                "sitename": metadata.get("sitename", ""),
+                "content": content,
+                "word_count": len(content.split()),
+                "format": format
+            }
+        }
+        if protection_info:
+            out["protection_info"] = protection_info
+        return out
+
+    except HTTPException as e:
+        return {"search_result": result, "fetch_status": "error", "fetch_error": e.detail, "content": None}
+    except Exception as e:
+        return {"search_result": result, "fetch_status": "error", "fetch_error": str(e), "content": None}
+
 
 @app.get("/search-and-fetch")
 async def search_and_fetch(
@@ -1939,333 +703,57 @@ async def search_and_fetch(
     format: str = Query("markdown", description="Output format: text, markdown, or html"),
     max_content_length: int = Query(100000, description="Maximum content length per page"),
     time_range: Optional[str] = Query(None, description="Time filter: day, week, month, year"),
-    # Stealth mode (FREE - no API keys needed)
-    stealth_mode: str = Query("off", description="Stealth mode: off, low, medium, high (FREE anti-bot bypass)"),
-    auto_bypass: bool = Query(False, description="Automatically try higher stealth levels if blocked")
+    stealth_mode: str = Query("off", description="Stealth mode: off, low, medium, high"),
+    auto_bypass: bool = Query(False, description="Auto-escalate stealth if blocked"),
 ):
-    """
-    Search and automatically fetch full content from top N results (Enhanced with Trafilatura)
-    
-    This is a convenience endpoint that:
-    1. Searches for your query (with optional time filter)
-    2. Gets top N results (default: 3, max: 5)
-    3. Fetches full webpage content using advanced extraction
-    4. Returns both search snippets AND full content (markdown/text/html)
-    
-    Time Range Options:
-    - day: Results from the past 24 hours
-    - week: Results from the past week
-    - month: Results from the past month
-    - year: Results from the past year
-    
-    Stealth Mode (FREE - no API keys needed):
-    - off: Standard fetch
-    - low/medium/high: Progressive anti-bot bypass
-    - auto_bypass: Automatically escalate stealth levels if blocked
-    
-    Example: /search-and-fetch?query=AI+news&num_results=3&format=markdown&time_range=day
-    Example: /search-and-fetch?query=protected+site&stealth_mode=high&auto_bypass=true
-    """
-    # Check cache (include stealth params in key)
+    """Search and auto-fetch full content from top N results."""
+    _validate_stealth_mode(stealth_mode)
+    _validate_time_range(time_range)
+
     cache_key = f"search_fetch:{CACHE_VERSION}:{query}:{num_results}:{categories}:{language}:{format}:{time_range}:{stealth_mode}"
     cached_result = cache.get(cache_key)
     if cached_result:
         return JSONResponse(content=cached_result)
 
     try:
-        # Step 1: Perform search
-        advanced_filters = parse_advanced_query(query)
-        has_advanced_filters = advanced_filters.get("has_filters", False)
-        effective_query = query
-
-        search_params = {
-            "q": effective_query,
-            "format": "json",
-            "language": language,
-            "pageno": 1
-        }
-        
+        search_params = {"q": query, "format": "json", "language": language, "pageno": 1}
         if categories:
             search_params["categories"] = categories
-        
-        # Add time range filter if specified
         if time_range:
-            valid_ranges = ["day", "week", "month", "year"]
-            if time_range.lower() in valid_ranges:
-                search_params["time_range"] = time_range.lower()
-            else:
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"Invalid time_range. Must be one of: {', '.join(valid_ranges)}"
-                )
-        
+            search_params["time_range"] = time_range.lower()
+
         async with httpx.AsyncClient(timeout=30.0) as client:
             search_response = await client.get(f"{SEARXNG_URL}/search", params=search_params)
             search_response.raise_for_status()
             search_data = search_response.json()
-        
-        # Get top N results
-        all_results = search_data.get("results", [])
-        raw_total = len(all_results)
 
-        if has_advanced_filters:
-            all_results = filter_results_by_advanced_ops(all_results, advanced_filters)
-        
-        top_results = all_results[:num_results]
-        
+        top_results = search_data.get("results", [])[:num_results]
+
         if not top_results:
-            return JSONResponse(content={
-                "query": query,
-                "num_results_found": 0,
-                "results": [],
-                "message": "No search results found"
-            })
-        
-        # Step 2: Fetch content from each URL in parallel
-        async def fetch_single_url(result: dict) -> dict:
-            """Fetch content for a single search result using enhanced extraction"""
-            url = result.get("url", "")
-            
-            # Validate URL
-            parsed = urlparse(url)
-            if not parsed.scheme or not parsed.netloc:
-                return {
-                    "search_result": result,
-                    "fetch_status": "error",
-                    "fetch_error": "Invalid URL format",
-                    "content": None
-                }
-            
-            # SSRF protection: validate public URL
-            try:
-                url = validate_public_url(url)
-            except HTTPException as e:
-                return {
-                    "search_result": result,
-                    "fetch_status": "error",
-                    "fetch_error": e.detail,
-                    "content": None
-                }
-            
-            try:
-                # Use advanced_fetch for stealth mode (FREE - no API keys needed)
-                fetch_result = await advanced_fetch(
-                    url=url,
-                    stealth_mode=stealth_mode,
-                    auto_bypass=auto_bypass
-                )
+            return JSONResponse(content={"query": query, "num_results_found": 0, "results": [], "message": "No search results found"})
 
-                html_content = fetch_result["html"]
-                final_url = fetch_result["final_url"]
-                fetch_method = fetch_result["fetch_method"]
-                protection_info = fetch_result["protection_info"]
-                content_bytes = fetch_result.get("content_bytes", b"")
-                content_type = fetch_result.get("content_type", "")
+        fetched_results = await asyncio.gather(*[
+            _fetch_and_extract(r, format, max_content_length, stealth_mode, auto_bypass)
+            for r in top_results
+        ])
 
-                # Check if this is a document file
-                is_document = False
-                document_type = None
-                document_text = ""
+        successful = sum(1 for r in fetched_results if r["fetch_status"] == "success")
+        failed = sum(1 for r in fetched_results if r["fetch_status"] == "error")
 
-                if DOCUMENT_EXTRACTOR_AVAILABLE and content_bytes:
-                    if is_document_url(final_url) or get_content_type_mime(content_type):
-                        doc_result = extract_document(content_bytes, content_type, final_url)
-                        if doc_result.get('success', False):
-                            is_document = True
-                            document_type = doc_result.get('document_type', 'unknown')
-                            document_text = doc_result.get('text', '')
-
-                # If it's a document, return it directly
-                if is_document:
-                    # Limit content length
-                    if len(document_text) > max_content_length:
-                        document_text = document_text[:max_content_length] + "\n\n... [truncated]"
-
-                    fetch_result_data = {
-                        "search_result": {
-                            "title": result.get("title", ""),
-                            "url": final_url,
-                            "snippet": result.get("content", ""),
-                            "engine": result.get("engine", ""),
-                            "score": result.get("score", 0)
-                        },
-                        "fetch_status": "success",
-                        "fetch_method": fetch_method,
-                        "is_document": True,
-                        "document_type": document_type,
-                        "fetched_content": {
-                            "title": result.get("title", ""),
-                            "content": document_text,
-                            "word_count": len(document_text.split()),
-                            "format": format
-                        }
-                    }
-
-                    # Add protection info if detected
-                    if protection_info:
-                        fetch_result_data["protection_info"] = protection_info
-
-                    return fetch_result_data
-
-                # Use trafilatura for better extraction
-                extracted = trafilatura.extract(
-                    html_content,
-                    include_comments=False,
-                    include_tables=True,
-                    include_images=True,
-                    include_links=True,
-                    output_format='json',
-                    url=final_url,
-                    with_metadata=True
-                )
-                
-                if extracted:
-                    data = json.loads(extracted)
-                    
-                    # Get content in requested format
-                    if format == "markdown":
-                        content = trafilatura.extract(
-                            html_content,
-                            include_comments=False,
-                            include_tables=True,
-                            output_format='markdown',
-                            url=final_url
-                        ) or data.get("text", "")
-                    elif format == "html":
-                        content = data.get("raw_text", data.get("text", ""))
-                    else:
-                        content = data.get("text", "")
-                    
-                    # Limit content length
-                    if len(content) > max_content_length:
-                        content = content[:max_content_length] + "\n\n... [truncated]"
-                    
-                    fetch_result_data = {
-                        "search_result": {
-                            "title": result.get("title", ""),
-                            "url": final_url,
-                            "snippet": result.get("content", ""),
-                            "engine": result.get("engine", ""),
-                            "score": result.get("score", 0)
-                        },
-                        "fetch_status": "success",
-                        "fetch_method": fetch_method,
-                        "fetched_content": {
-                            "title": data.get("title", result.get("title", "")),
-                            "author": data.get("author", ""),
-                            "date": data.get("date", ""),
-                            "sitename": data.get("sitename", ""),
-                            "content": content,
-                            "word_count": len(content.split()),
-                            "format": format
-                        }
-                    }
-                    
-                    # Add protection info if detected
-                    if protection_info:
-                        fetch_result_data["protection_info"] = protection_info
-                    
-                    return fetch_result_data
-                else:
-                    # Fallback to readability
-                    doc = Document(html_content)
-                    article_html = doc.summary()
-                    
-                    if format == "markdown":
-                        h = html2text.HTML2Text()
-                        h.body_width = 0
-                        content = h.handle(article_html)
-                    elif format == "html":
-                        content = article_html
-                    else:
-                        article_soup = BeautifulSoup(article_html, 'lxml')
-                        content = article_soup.get_text(separator="\n", strip=True)
-                        content = re.sub(r'\n{3,}', '\n\n', content)
-                    
-                    # Limit content length
-                    if len(content) > max_content_length:
-                        content = content[:max_content_length] + "\n\n... [truncated]"
-                    
-                    fetch_result_data = {
-                        "search_result": {
-                            "title": result.get("title", ""),
-                            "url": final_url,
-                            "snippet": result.get("content", ""),
-                            "engine": result.get("engine", ""),
-                            "score": result.get("score", 0)
-                        },
-                        "fetch_status": "success",
-                        "fetch_method": fetch_method,
-                        "fetched_content": {
-                            "title": doc.title(),
-                            "content": content,
-                            "word_count": len(content.split()),
-                            "format": format
-                        }
-                    }
-                    
-                    # Add protection info if detected
-                    if protection_info:
-                        fetch_result_data["protection_info"] = protection_info
-                    
-                    return fetch_result_data
-                    
-            except HTTPException as e:
-                return {
-                    "search_result": result,
-                    "fetch_status": "error",
-                    "fetch_error": e.detail,
-                    "content": None
-                }
-            except Exception as e:
-                return {
-                    "search_result": result,
-                    "fetch_status": "error",
-                    "fetch_error": f"Processing error: {str(e)}",
-                    "content": None
-                }
-        
-        # Fetch all URLs in parallel
-        fetch_tasks = [fetch_single_url(result) for result in top_results]
-        fetched_results = await asyncio.gather(*fetch_tasks)
-        
-        # Count successes and failures
-        successful_fetches = sum(1 for r in fetched_results if r["fetch_status"] == "success")
-        failed_fetches = sum(1 for r in fetched_results if r["fetch_status"] == "error")
-        
         final_response = {
             "query": query,
             "num_results_requested": num_results,
             "num_results_found": len(top_results),
-            "successful_fetches": successful_fetches,
-            "failed_fetches": failed_fetches,
-            "fetch_options": {
-                "stealth_mode": stealth_mode,
-                "auto_bypass": auto_bypass
-            },
+            "successful_fetches": successful,
+            "failed_fetches": failed,
+            "fetch_options": {"stealth_mode": stealth_mode, "auto_bypass": auto_bypass},
             "results": fetched_results,
             "suggestions": search_data.get("suggestions", [])
         }
 
-        if has_advanced_filters:
-            final_response["applied_filters"] = {
-                "include_sites": advanced_filters.get("include_sites", []),
-                "exclude_sites": advanced_filters.get("exclude_sites", []),
-                "include_filetypes": advanced_filters.get("include_filetypes", []),
-                "exclude_filetypes": advanced_filters.get("exclude_filetypes", []),
-                "include_phrases": advanced_filters.get("include_phrases", []),
-                "exclude_phrases": advanced_filters.get("exclude_phrases", []),
-                "groups": advanced_filters.get("groups", []),
-                "effective_query": effective_query,
-                "cleaned_query": advanced_filters.get("cleaned_query", "")
-            }
-            final_response["filtered_out"] = max(raw_total - len(all_results), 0)
-        
-        # Cache result
         cache.set(cache_key, final_response, expire=3600)
-        
         return JSONResponse(content=final_response)
-        
+
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=e.response.status_code, detail=f"Search failed: {str(e)}")
     except httpx.RequestError as e:
@@ -2273,313 +761,136 @@ async def search_and_fetch(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
+
 @app.get("/deep-research")
 async def deep_research(
-    queries: str = Query(..., description="Comma-separated list of research queries (e.g., 'AI trends,machine learning basics,neural networks')"),
-    breadth: int = Query(3, description="Number of results to fetch per query (1-5)", ge=1, le=5),
+    queries: str = Query(..., description="Comma-separated research queries"),
+    breadth: int = Query(3, description="Results per query (1-5)", ge=1, le=5),
     time_range: Optional[str] = Query(None, description="Time filter: day, week, month, year"),
     max_content_length: int = Query(30000, description="Max content length per result"),
-    include_suggestions: bool = Query(True, description="Include search suggestions in output"),
-    # Stealth mode (FREE - no API keys needed)
-    stealth_mode: str = Query("off", description="Stealth mode: off, low, medium, high (FREE anti-bot bypass)"),
-    auto_bypass: bool = Query(False, description="Automatically try higher stealth levels if blocked")
+    include_suggestions: bool = Query(True, description="Include suggestions"),
+    stealth_mode: str = Query("off", description="Stealth mode"),
+    auto_bypass: bool = Query(False, description="Auto-escalate stealth if blocked"),
 ):
-    """
-    Perform comprehensive research across multiple queries and compile into a unified report.
-    
-    Workflow:
-    1. Parse multiple queries (comma-separated)
-    2. For each query, search and fetch top N results (breadth)
-    3. Process all queries in parallel for speed
-    4. Compile all results into one detailed, well-formatted response
-    
-    Stealth Mode (FREE - no API keys needed):
-    - off: Standard fetch
-    - low/medium/high: Progressive anti-bot bypass
-    - auto_bypass: Automatically escalate stealth levels if blocked
-    
-    Example: /deep-research?queries=AI+trends,machine+learning+2024,GPT+applications&breadth=3&time_range=month
-    Example: /deep-research?queries=protected+sites&stealth_mode=high&auto_bypass=true
-    
-    Response includes:
-    - Summary statistics
-    - Per-query research results with full content
-    - Compiled markdown report
-    - All suggestions for further research
-    """
-    # Parse queries
+    """Multi-query research — runs queries in parallel and compiles results."""
     query_list = [q.strip() for q in queries.split(",") if q.strip()]
-    
     if not query_list:
-        raise HTTPException(status_code=400, detail="No valid queries provided. Use comma-separated queries.")
-    
+        raise HTTPException(status_code=400, detail="No valid queries provided.")
     if len(query_list) > 10:
-        raise HTTPException(status_code=400, detail="Maximum 10 queries allowed per request.")
-    
-    # Validate stealth_mode
-    valid_stealth_modes = ["off", "low", "medium", "high"]
-    if stealth_mode.lower() not in valid_stealth_modes:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid stealth_mode. Must be one of: {', '.join(valid_stealth_modes)}"
-        )
-    
-    # Check cache
+        raise HTTPException(status_code=400, detail="Maximum 10 queries allowed.")
+
+    _validate_stealth_mode(stealth_mode)
+    _validate_time_range(time_range)
+
     cache_key = f"deep_research:{CACHE_VERSION}:{','.join(sorted(query_list))}:{breadth}:{time_range}:{max_content_length}:{stealth_mode}"
     cached_result = cache.get(cache_key)
     if cached_result:
         return JSONResponse(content=cached_result)
-    
+
     try:
-        # Process all queries in parallel
-        async def process_single_query(query: str) -> dict:
-            """Process a single query and return structured results"""
+        async def process_query(query: str) -> dict:
             try:
-                result = await search_and_fetch(
-                    query=query,
-                    num_results=breadth,
-                    time_range=time_range,
-                    format="markdown",
-                    max_content_length=max_content_length,
-                    categories="general",
-                    language="en",
-                    
-                    stealth_mode=stealth_mode,
-                    auto_bypass=auto_bypass
-                )
-                
-                # Parse JSONResponse
-                data = json.loads(result.body.decode())
-                
+                # ponytail: call the search+fetch logic directly instead of through the endpoint
+                search_params = {"q": query, "format": "json", "language": "en", "pageno": 1}
+                if time_range:
+                    search_params["time_range"] = time_range.lower()
+
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.get(f"{SEARXNG_URL}/search", params=search_params)
+                    resp.raise_for_status()
+                    search_data = resp.json()
+
+                top = search_data.get("results", [])[:breadth]
+                fetched = await asyncio.gather(*[
+                    _fetch_and_extract(r, "markdown", max_content_length, stealth_mode, auto_bypass)
+                    for r in top
+                ])
+
+                successful = sum(1 for r in fetched if r["fetch_status"] == "success")
                 return {
-                    "query": query,
-                    "status": "success",
-                    "num_results": data.get("num_results_found", 0),
-                    "successful_fetches": data.get("successful_fetches", 0),
-                    "results": data.get("results", []),
-                    "suggestions": data.get("suggestions", []),
-                    "fetch_options": data.get("fetch_options", {})
+                    "query": query, "status": "success",
+                    "num_results": len(top), "successful_fetches": successful,
+                    "results": fetched,
+                    "suggestions": search_data.get("suggestions", [])
                 }
             except Exception as e:
-                return {
-                    "query": query,
-                    "status": "error",
-                    "error": str(e),
-                    "num_results": 0,
-                    "results": [],
-                    "suggestions": []
-                }
-        
-        # Execute all queries in parallel
-        query_tasks = [process_single_query(q) for q in query_list]
-        query_results = await asyncio.gather(*query_tasks)
-        
-        # Compile statistics
+                return {"query": query, "status": "error", "error": str(e), "num_results": 0, "results": [], "suggestions": []}
+
+        query_results = await asyncio.gather(*[process_query(q) for q in query_list])
+
         total_results = sum(r["num_results"] for r in query_results)
-        total_successful = sum(r["successful_fetches"] for r in query_results if r["status"] == "success")
-        successful_queries = sum(1 for r in query_results if r["status"] == "success")
-        failed_queries = sum(1 for r in query_results if r["status"] == "error")
-        
-        # Collect all suggestions
-        all_suggestions = []
-        for r in query_results:
-            all_suggestions.extend(r.get("suggestions", []))
-        unique_suggestions = list(set(all_suggestions))[:20]  # Dedupe and limit
-        
-        # Generate compiled markdown report
-        compiled_report = _generate_compiled_report(query_list, query_results)
-        
-        # Build final response
+        total_successful = sum(r.get("successful_fetches", 0) for r in query_results if r["status"] == "success")
+
+        all_suggestions = list(set(s for r in query_results for s in r.get("suggestions", [])))[:20]
+
         final_response = {
             "research_summary": {
                 "total_queries": len(query_list),
-                "successful_queries": successful_queries,
-                "failed_queries": failed_queries,
+                "successful_queries": sum(1 for r in query_results if r["status"] == "success"),
+                "failed_queries": sum(1 for r in query_results if r["status"] == "error"),
                 "total_results_found": total_results,
                 "total_successful_fetches": total_successful,
                 "time_range_filter": time_range,
                 "breadth_per_query": breadth,
-                "fetch_options": {
-                    "stealth_mode": stealth_mode,
-                    "auto_bypass": auto_bypass
-                }
             },
             "queries": query_list,
             "query_results": query_results,
-            "compiled_report": compiled_report,
-            "all_suggestions": unique_suggestions if include_suggestions else []
+            "all_suggestions": all_suggestions if include_suggestions else []
         }
-        
-        # Cache result (30 minutes for deep research)
+        # ponytail: removed _generate_compiled_report — the LLM consumer can format its own report from structured JSON
+
         cache.set(cache_key, final_response, expire=1800)
-        
         return JSONResponse(content=final_response)
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Deep research failed: {str(e)}")
 
 
-def _generate_compiled_report(queries: List[str], results: List[dict]) -> str:
-    """Generate a compiled markdown report from all query results"""
-    
-    report_lines = [
-        "# Deep Research Report",
-        "",
-        f"**Queries Researched:** {len(queries)}",
-        f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        "",
-        "---",
-        ""
-    ]
-    
-    for i, result in enumerate(results, 1):
-        query = result.get("query", "Unknown")
-        report_lines.append(f"## {i}. {query}")
-        report_lines.append("")
-        
-        if result.get("status") == "error":
-            report_lines.append(f"⚠️ **Error:** {result.get('error', 'Unknown error')}")
-            report_lines.append("")
-            continue
-        
-        fetched_results = result.get("results", [])
-        if not fetched_results:
-            report_lines.append("*No results found for this query.*")
-            report_lines.append("")
-            continue
-        
-        for j, res in enumerate(fetched_results, 1):
-            search_result = res.get("search_result", {})
-            fetched_content = res.get("fetched_content", {})
-            
-            title = fetched_content.get("title") or search_result.get("title", "Untitled")
-            url = search_result.get("url", "")
-            author = fetched_content.get("author", "")
-            date = fetched_content.get("date", "")
-            sitename = fetched_content.get("sitename", "")
-            content = fetched_content.get("content", "")
-            
-            report_lines.append(f"### {i}.{j} {title}")
-            report_lines.append("")
-            
-            # Metadata line
-            meta_parts = []
-            if sitename:
-                meta_parts.append(f"**Source:** {sitename}")
-            if author:
-                meta_parts.append(f"**Author:** {author}")
-            if date:
-                meta_parts.append(f"**Date:** {date}")
-            if url:
-                meta_parts.append(f"[🔗 Link]({url})")
-            
-            if meta_parts:
-                report_lines.append(" | ".join(meta_parts))
-                report_lines.append("")
-            
-            if res.get("fetch_status") == "success" and content:
-                # Truncate content for report readability
-                if len(content) > 2000:
-                    content = content[:2000] + "\n\n*[Content truncated for report...]*"
-                report_lines.append(content)
-            elif res.get("fetch_status") == "error":
-                report_lines.append(f"*Failed to fetch: {res.get('fetch_error', 'Unknown error')}*")
-            else:
-                snippet = search_result.get("snippet", "No content available.")
-                report_lines.append(snippet)
-            
-            report_lines.append("")
-            report_lines.append("---")
-            report_lines.append("")
-    
-    return "\n".join(report_lines)
-
 @app.get("/crawl-site")
 async def crawl_site(
     start_url: str = Query(..., description="Starting URL to crawl"),
-    max_pages: int = Query(50, description="Maximum number of pages to crawl (1-200)", ge=1, le=200),
-    max_depth: int = Query(2, description="Maximum crawl depth (0-5)", ge=0, le=5),
+    max_pages: int = Query(50, description="Max pages (1-200)", ge=1, le=200),
+    max_depth: int = Query(2, description="Max depth (0-5)", ge=0, le=5),
     format: str = Query("markdown", description="Output format: text, markdown, or html"),
-    include_links: bool = Query(True, description="Include extracted links"),
-    include_images: bool = Query(True, description="Include extracted images"),
-    url_patterns: Optional[str] = Query(None, description="Comma-separated regex patterns to include URLs (e.g., '/blog/,/docs/')"),
-    exclude_patterns: Optional[str] = Query(None, description="Comma-separated regex patterns to exclude URLs"),
-    stealth_mode: str = Query("off", description="Stealth mode: off, low, medium, high (applies to all requests)"),
-    obey_robots: bool = Query(True, description="Obey robots.txt rules (set to False to bypass)"),
+    include_links: bool = Query(True, description="Include links"),
+    include_images: bool = Query(True, description="Include images"),
+    url_patterns: Optional[str] = Query(None, description="Comma-separated URL patterns to include"),
+    exclude_patterns: Optional[str] = Query(None, description="Comma-separated URL patterns to exclude"),
+    stealth_mode: str = Query("off", description="Stealth mode"),
+    obey_robots: bool = Query(True, description="Obey robots.txt"),
 ):
-    """
-    Crawl an entire website and extract content from multiple pages.
-    
-    This endpoint uses Scrapy to perform site-wide crawling:
-    - Starts from a given URL
-    - Follows internal links up to max_depth
-    - Extracts content using Trafilatura (same as /fetch)
-    - Returns all discovered pages with their content
-    
-    Features:
-    - Depth control: Limit how many link-hops from start_url
-    - URL filtering: Include/exclude specific URL patterns
-    - Polite crawling: Respects robots.txt and rate limits
-    - Stealth mode: Anti-bot bypass for all requests
-    
-    Use Cases:
-    - Crawl documentation sites (e.g., docs.python.org)
-    - Extract all blog posts from a blog
-    - Build knowledge bases from websites
-    - Archive entire sections of websites
-    
-    Example: /crawl-site?start_url=https://example.com/blog&max_pages=20&max_depth=2&url_patterns=/blog/
-    
-    Note: This is a long-running operation. For 50+ pages, it may take several minutes.
-    """
-    from urllib.parse import urlparse
-    
-    # Validate URL
+    """Crawl a website and extract content from multiple pages."""
     parsed = urlparse(start_url)
     if not parsed.scheme or not parsed.netloc:
         raise HTTPException(status_code=400, detail="Invalid URL format")
-    
-    # SSRF protection: validate public URL
+
     start_url = validate_public_url(start_url)
-    
-    # Re-parse after validation
-    parsed = urlparse(start_url)
-    
-    # Validate stealth_mode
-    valid_stealth_modes = ["off", "low", "medium", "high"]
-    if stealth_mode.lower() not in valid_stealth_modes:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid stealth_mode. Must be one of: {', '.join(valid_stealth_modes)}"
-        )
-    
-    # Parse URL patterns
-    url_pattern_list = None
-    if url_patterns:
-        url_pattern_list = [p.strip() for p in url_patterns.split(",") if p.strip()]
-    
-    exclude_pattern_list = None
-    if exclude_patterns:
-        exclude_pattern_list = [p.strip() for p in exclude_patterns.split(",") if p.strip()]
-    
-    # Check cache
+    _validate_stealth_mode(stealth_mode)
+
+    url_pattern_list = [p.strip() for p in url_patterns.split(",") if p.strip()] if url_patterns else None
+    exclude_pattern_list = [p.strip() for p in exclude_patterns.split(",") if p.strip()] if exclude_patterns else None
+
     cache_key = f"crawl:{CACHE_VERSION}:{start_url}:{max_pages}:{max_depth}:{format}:{url_patterns}:{exclude_patterns}:{stealth_mode}:{obey_robots}"
     cached_result = cache.get(cache_key)
     if cached_result:
         return JSONResponse(content=cached_result)
-    
+
     try:
-        # Import spider
-        from scrapy_crawler import SiteCrawlerSpider
         import subprocess
-        import json as json_lib
-        import os as os_lib
         import uuid
-        
-        # Create temp file for results (use a fixed path for debugging)
+
         results_filename = f"/tmp/scrapy_results_{uuid.uuid4().hex}.json"
-        
-        # Build scrapy command - simplified approach using -o flag
+
+        def sanitize_arg(arg: str) -> str:
+            if '=' in arg:
+                key, value = arg.split('=', 1)
+                if not re.match(r'^[a-zA-Z0-9._\-:/@=]+$', value):
+                    raise HTTPException(status_code=400, detail=f"Invalid characters in argument value: {value[:50]}")
+                return f'{key}={value}'
+            if not re.match(r'^[a-zA-Z0-9._\-:/,@\s]+$', arg):
+                raise HTTPException(status_code=400, detail=f"Invalid characters in argument: {arg[:50]}")
+            return arg
+
         cmd = [
             'scrapy', 'runspider',
             os.path.join(os.path.dirname(__file__), 'scrapy_crawler.py'),
@@ -2590,88 +901,45 @@ async def crawl_site(
             '-a', f'include_links={include_links}',
             '-a', f'include_images={include_images}',
             '-a', f'stealth_mode={stealth_mode}',
-            '-o', results_filename,  # Output file
+            '-o', results_filename,
             '-s', 'LOG_LEVEL=INFO',
             '-s', f'ROBOTSTXT_OBEY={str(obey_robots)}',
             '-s', 'CONCURRENT_REQUESTS=8',
             '-s', 'DOWNLOAD_DELAY=1',
             '-s', 'AUTOTHROTTLE_ENABLED=True',
         ]
-        
-        # Add stealth middleware if enabled
-        # Note: Stealth mode is passed to spider but middleware integration requires proper Scrapy project setup
-        # For now, stealth_mode is used as a flag for the spider to adjust behavior
+
         if stealth_mode != "off":
-            cmd.extend([
-                '-s', f'STEALTH_MODE={stealth_mode}',
-            ])
-        
-        # Sanitize subprocess arguments to prevent command injection
-        def sanitize_arg(arg: str) -> str:
-            # Allow key=value format - split and sanitize only the value
-            if '=' in arg:
-                key, value = arg.split('=', 1)
-                if not re.match(r'^[a-zA-Z0-9._\-:/@=]+$', value):
-                    raise HTTPException(status_code=400, detail=f"Invalid characters in argument value: {value[:50]}")
-                return f'{key}={value}'
-            if not re.match(r'^[a-zA-Z0-9._\-:/,@\s]+$', arg):
-                raise HTTPException(status_code=400, detail=f"Invalid characters in argument: {arg[:50]}")
-            return arg
-        
+            cmd.extend(['-s', f'STEALTH_MODE={stealth_mode}'])
+
         if url_pattern_list:
-            sanitized_patterns = ','.join(sanitize_arg(p) for p in url_pattern_list)
-            cmd.extend(['-a', f'url_patterns={sanitized_patterns}'])
+            sanitized = ','.join(sanitize_arg(p) for p in url_pattern_list)
+            cmd.extend(['-a', f'url_patterns={sanitized}'])
         if exclude_pattern_list:
-            sanitized_excludes = ','.join(sanitize_arg(p) for p in exclude_pattern_list)
-            cmd.extend(['-a', f'exclude_patterns={sanitized_excludes}'])
-        
-        # Sanitize user-provided values in cmd (but not flags like -a, -s)
-        # Only sanitize values that come after -a or -s flags
+            sanitized = ','.join(sanitize_arg(p) for p in exclude_pattern_list)
+            cmd.extend(['-a', f'exclude_patterns={sanitized}'])
+
+        # Sanitize user-provided values
         for i, arg in enumerate(cmd):
             if isinstance(arg, str) and i > 0 and cmd[i-1] in ('-a', '-s'):
                 cmd[i] = sanitize_arg(arg)
-        
-        # Run Scrapy in subprocess to avoid reactor conflicts
-        process = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=900,  # 15 minute timeout for heavier crawls
-            cwd=os.path.dirname(__file__)
-        )
-        
-        # Debug: log the command and output
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.info(f"Scrapy command: {' '.join(cmd)}")
-        logger.info(f"Scrapy return code: {process.returncode}")
-        logger.info(f"Scrapy stdout: {process.stdout[:500]}")
-        logger.info(f"Scrapy stderr: {process.stderr[:500]}")
-        logger.info(f"Results file: {results_filename}")
-        logger.info(f"File exists: {os_lib.path.exists(results_filename)}")
-        
-        # Check for errors
+
+        process = subprocess.run(cmd, capture_output=True, text=True, timeout=900, cwd=os.path.dirname(__file__))
+
         if process.returncode != 0:
             raise Exception(f"Scrapy failed with code {process.returncode}: {process.stderr}")
-        
-        # Check if results file exists
-        if not os_lib.path.exists(results_filename):
-            raise Exception(f"Scrapy did not create results file at {results_filename}. Stdout: {process.stdout[:200]}")
-        
-        # Read results
-        try:
-            with open(results_filename, 'r') as f:
-                content = f.read()
-                if not content or content.strip() == '':
-                    raise Exception("Scrapy results file is empty")
-                results = json_lib.loads(content)
-        except json_lib.JSONDecodeError as e:
-            raise Exception(f"Invalid JSON from Scrapy: {e}")
-        
-        # Clean up temp files
-        os_lib.unlink(results_filename)
-        
-        # Compile response
+
+        if not os.path.exists(results_filename):
+            raise Exception(f"Scrapy did not create results file")
+
+        with open(results_filename, 'r') as f:
+            content = f.read()
+            if not content or content.strip() == '':
+                raise Exception("Scrapy results file is empty")
+            results = json.loads(content)
+
+        os.unlink(results_filename)
+
         response_data = {
             "crawl_summary": {
                 "start_url": start_url,
@@ -2684,46 +952,31 @@ async def crawl_site(
             "pages": results,
             "total_words": sum(r.get("word_count", 0) for r in results),
         }
-        
-        # Cache result (30 minutes)
+
         cache.set(cache_key, response_data, expire=1800)
-        
         return JSONResponse(content=response_data)
-        
+
     except ImportError as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Scrapy dependencies not installed. Run: pip install scrapy crochet. Error: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Scrapy dependencies not installed: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Crawl failed: {str(e)}")
+
 
 @app.get("/health")
 @app.head("/health")
 async def health_check():
-    """Check if SearXNG is accessible"""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(SEARXNG_URL)
             searxng_status = "up" if response.status_code == 200 else "down"
-    except:
+    except Exception:
         searxng_status = "down"
-    
-    return {
-        "status": "ok",
-        "searxng": searxng_status,
-        "searxng_url": SEARXNG_URL
-    }
 
-@app.head("/")
-async def root_head():
-    """Handle HEAD requests for health checks"""
-    return {}
+    return {"status": "ok", "searxng": searxng_status, "searxng_url": SEARXNG_URL}
 
 
-# ============== YouTube Transcript Endpoint ==============
+# ===== YouTube Transcript =====
 
-# YouTube video ID extraction patterns
 YOUTUBE_ID_REGEXES = [
     r"(?:v=|/videos/|embed/|shorts/)([\w-]{11})",
     r"youtu\.be/([\w-]{11})",
@@ -2731,8 +984,8 @@ YOUTUBE_ID_REGEXES = [
     r"^([\w-]{11})$",
 ]
 
+
 def extract_video_id(url_or_id: str) -> Optional[str]:
-    """Extract YouTube video ID from URL or direct ID."""
     s = url_or_id.strip()
     for pattern in YOUTUBE_ID_REGEXES:
         m = re.search(pattern, s)
@@ -2744,153 +997,105 @@ def extract_video_id(url_or_id: str) -> Optional[str]:
 
 
 def fetch_transcript_ytdlp(video_id: str, lang: Optional[str] = None) -> dict:
-    """
-    Fallback transcript fetcher using yt-dlp.
-    Better anti-bot handling, works from datacenter IPs.
-    Returns dict with 'transcript' (list of segments), 'language', and 'available_langs'.
-    """
+    """Fallback transcript fetcher using yt-dlp."""
     import subprocess
-    import json
     import tempfile
-    import os
     import shutil
-    
-    # Check if yt-dlp is available
+
     if not shutil.which("yt-dlp"):
         raise Exception("yt-dlp is not installed or not in PATH")
-    
+
     url = f"https://www.youtube.com/watch?v={video_id}"
-    
-    # First, get available subtitles
-    # Use extractor args to bypass YouTube sign-in requirements
+
     try:
         result = subprocess.run(
-            [
-                "yt-dlp",
-                "--extractor-args", "youtube:player_client=ios,web",
-                "--no-check-certificates",
-                "--list-subs", 
-                "--skip-download", 
-                "-J", 
-                url
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60
+            ["yt-dlp", "--extractor-args", "youtube:player_client=ios,web",
+             "--no-check-certificates", "--list-subs", "--skip-download", "-J", url],
+            capture_output=True, text=True, timeout=60
         )
-        
-        # Handle non-zero return code
         if result.returncode != 0:
-            error_msg = result.stderr.strip() or result.stdout.strip() or "Unknown error"
-            raise Exception(f"yt-dlp failed with code {result.returncode}: {error_msg[:500]}")
-        
+            raise Exception(f"yt-dlp failed: {(result.stderr or result.stdout)[:500]}")
+
         info = json.loads(result.stdout)
         subtitles = info.get("subtitles", {})
         auto_captions = info.get("automatic_captions", {})
-        
-        available_langs = []
-        for code in subtitles.keys():
-            available_langs.append({"code": code, "is_generated": False})
-        for code in auto_captions.keys():
-            if code not in subtitles:
-                available_langs.append({"code": code, "is_generated": True})
-        
+
+        available_langs = [{"code": c, "is_generated": False} for c in subtitles]
+        available_langs += [{"code": c, "is_generated": True} for c in auto_captions if c not in subtitles]
+
         if not available_langs:
             raise Exception("No subtitles available for this video")
-            
+
     except FileNotFoundError:
         raise Exception("yt-dlp executable not found")
     except subprocess.TimeoutExpired:
-        raise Exception("Timeout fetching subtitle info from yt-dlp")
-    except json.JSONDecodeError as jde:
-        raise Exception(f"Failed to parse yt-dlp JSON output: {str(jde)}")
-    
-    # Determine which language to fetch
+        raise Exception("Timeout fetching subtitle info")
+    except json.JSONDecodeError as e:
+        raise Exception(f"Failed to parse yt-dlp output: {e}")
+
+    # Determine language
     target_lang = lang
-    is_auto = False
-    
     if target_lang:
-        # Check if requested language exists
         if target_lang not in subtitles and target_lang not in auto_captions:
-            # Try to find a close match
             for code in list(subtitles.keys()) + list(auto_captions.keys()):
                 if code.startswith(target_lang) or target_lang.startswith(code.split('-')[0]):
                     target_lang = code
                     break
     else:
-        # Auto-detect: prefer manual over auto-generated
-        if subtitles:
-            target_lang = list(subtitles.keys())[0]
-        elif auto_captions:
-            target_lang = list(auto_captions.keys())[0]
-            is_auto = True
-    
+        target_lang = next(iter(subtitles), None) or next(iter(auto_captions), None)
+
     if not target_lang:
         raise Exception("No suitable subtitle track found")
-    
-    # Download the subtitle
+
+    is_auto = target_lang in auto_captions and target_lang not in subtitles
+
     with tempfile.TemporaryDirectory() as tmpdir:
         sub_file = os.path.join(tmpdir, "sub")
-        
-        # Build yt-dlp command with bypass options
+        write_flag = "--write-sub" if target_lang in subtitles else "--write-auto-sub"
+
         cmd = [
-            "yt-dlp",
-            "--extractor-args", "youtube:player_client=ios,web",
-            "--no-check-certificates",
-            "--skip-download",
-            "--write-sub" if target_lang in subtitles else "--write-auto-sub",
-            "--sub-lang", target_lang,
-            "--sub-format", "json3",
-            "--convert-subs", "json3",
-            "-o", sub_file,
-            url
+            "yt-dlp", "--extractor-args", "youtube:player_client=ios,web",
+            "--no-check-certificates", "--skip-download",
+            write_flag, "--sub-lang", target_lang,
+            "--sub-format", "json3", "--convert-subs", "json3",
+            "-o", sub_file, url
         ]
-        
+
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         except subprocess.TimeoutExpired:
             raise Exception("Timeout downloading subtitles")
-        
-        # Find the subtitle file
+
         sub_files = [f for f in os.listdir(tmpdir) if f.endswith('.json3')]
         if not sub_files:
-            # Try vtt format as fallback
-            cmd[cmd.index("json3")] = "vtt"
-            cmd[cmd.index("json3")] = "vtt"
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            # Try vtt fallback
+            cmd_vtt = [c if c != "json3" else "vtt" for c in cmd]
+            subprocess.run(cmd_vtt, capture_output=True, text=True, timeout=120)
             sub_files = [f for f in os.listdir(tmpdir) if '.vtt' in f or '.json' in f]
-        
+
         if not sub_files:
-            raise Exception(f"Failed to download subtitles: {result.stderr}")
-        
+            raise Exception("Failed to download subtitles")
+
         sub_path = os.path.join(tmpdir, sub_files[0])
-        
         with open(sub_path, 'r', encoding='utf-8') as f:
             content = f.read()
-        
-        # Parse based on format
+
         transcript = []
         if sub_path.endswith('.json3'):
-            try:
-                data = json.loads(content)
-                events = data.get('events', [])
-                for event in events:
-                    if 'segs' in event:
-                        text = ''.join(seg.get('utf8', '') for seg in event['segs']).strip()
-                        if text:
-                            transcript.append({
-                                'start': event.get('tStartMs', 0) / 1000.0,
-                                'duration': (event.get('dDurationMs', 0)) / 1000.0,
-                                'text': text
-                            })
-            except json.JSONDecodeError:
-                raise Exception("Failed to parse subtitle file")
+            data = json.loads(content)
+            for event in data.get('events', []):
+                if 'segs' in event:
+                    text = ''.join(seg.get('utf8', '') for seg in event['segs']).strip()
+                    if text:
+                        transcript.append({
+                            'start': event.get('tStartMs', 0) / 1000.0,
+                            'duration': event.get('dDurationMs', 0) / 1000.0,
+                            'text': text
+                        })
         else:
-            # Parse VTT format
-            import re
+            # VTT
             pattern = r'(\d{2}:\d{2}:\d{2}\.\d{3}) --> (\d{2}:\d{2}:\d{2}\.\d{3})\n(.+?)(?=\n\n|$)'
-            matches = re.findall(pattern, content, re.DOTALL)
-            for start_time, end_time, text in matches:
+            for start_time, end_time, text in re.findall(pattern, content, re.DOTALL):
                 def time_to_seconds(t):
                     parts = t.replace(',', '.').split(':')
                     return float(parts[0])*3600 + float(parts[1])*60 + float(parts[2])
@@ -2898,16 +1103,12 @@ def fetch_transcript_ytdlp(video_id: str, lang: Optional[str] = None) -> dict:
                 end = time_to_seconds(end_time)
                 clean_text = re.sub(r'<[^>]+>', '', text).strip()
                 if clean_text:
-                    transcript.append({
-                        'start': start,
-                        'duration': end - start,
-                        'text': clean_text
-                    })
-        
+                    transcript.append({'start': start, 'duration': end - start, 'text': clean_text})
+
         return {
             'transcript': transcript,
             'language': target_lang,
-            'is_generated': is_auto or target_lang in auto_captions,
+            'is_generated': is_auto,
             'available_langs': available_langs
         }
 
@@ -2916,165 +1117,97 @@ def fetch_transcript_ytdlp(video_id: str, lang: Optional[str] = None) -> dict:
 async def youtube_transcript(
     video: str = Query(..., description="YouTube video URL or 11-character video ID"),
     format: str = Query("text", description="Output format: text, json, or srt"),
-    lang: Optional[str] = Query(None, description="Preferred language code (e.g., 'en', 'es', 'hi'). If not specified, auto-detects and fetches first available transcript"),
-    translate: Optional[str] = Query(None, description="Translate transcript to target language code"),
-    start: Optional[float] = Query(None, description="Start time in seconds to trim transcript"),
-    end: Optional[float] = Query(None, description="End time in seconds to trim transcript"),
-    list_langs: bool = Query(False, description="List available transcript languages instead of fetching"),
+    lang: Optional[str] = Query(None, description="Preferred language code"),
+    translate: Optional[str] = Query(None, description="Translate to target language"),
+    start: Optional[float] = Query(None, description="Start time in seconds"),
+    end: Optional[float] = Query(None, description="End time in seconds"),
+    list_langs: bool = Query(False, description="List available languages instead"),
 ):
-    """
-    Fetch YouTube video transcripts for LLM consumption.
-    
-    Features:
-    - Accepts YouTube URL or video ID
-    - Multiple output formats (text, json, srt)
-    - Language selection and translation
-    - Time-range slicing
-    - Lists available languages
-    
-    Examples:
-    - /yt-transcript?video=dQw4w9WgXcQ&format=text
-    - /yt-transcript?video=https://youtube.com/watch?v=dQw4w9WgXcQ&lang=en
-    - /yt-transcript?video=dQw4w9WgXcQ&translate=es
-    - /yt-transcript?video=dQw4w9WgXcQ&start=60&end=120
-    - /yt-transcript?video=dQw4w9WgXcQ&list_langs=true
-    """
-    # Lazy import to avoid loading if not used
+    """Fetch YouTube video transcripts."""
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
         from youtube_transcript_api.formatters import TextFormatter, JSONFormatter, SRTFormatter
     except ImportError:
-        raise HTTPException(
-            status_code=503,
-            detail="youtube-transcript-api not installed. Run: pip install youtube-transcript-api>=1.0"
-        )
-    
-    # Validate format
-    valid_formats = ["text", "json", "srt"]
+        raise HTTPException(status_code=503, detail="youtube-transcript-api not installed")
+
+    valid_formats = {"text", "json", "srt"}
     if format.lower() not in valid_formats:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid format. Must be one of: {', '.join(valid_formats)}"
-        )
-    
-    # Extract video ID
+        raise HTTPException(status_code=400, detail=f"Format must be one of: {', '.join(valid_formats)}")
+
     video_id = extract_video_id(video)
     if not video_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Could not extract a valid YouTube video ID. Provide a YouTube URL or 11-character video ID."
-        )
-    
-    # Check cache
-    cache_key = f"yt-transcript:{CACHE_VERSION}:{video_id}:{format}:{lang}:{translate}:{start}:{end}:{list_langs}"
+        raise HTTPException(status_code=400, detail="Could not extract YouTube video ID")
+
+    cache_key = f"yt:{CACHE_VERSION}:{video_id}:{format}:{lang}:{translate}:{start}:{end}:{list_langs}"
     cached_result = cache.get(cache_key)
     if cached_result:
         return JSONResponse(content=cached_result)
-    
+
     try:
-        # Create API instance
         ytt_api = YouTubeTranscriptApi()
-        
-        # List available languages
+
         if list_langs:
             transcript_list = ytt_api.list(video_id)
-            langs = []
-            for t in transcript_list:
-                langs.append({
-                    "language_code": t.language_code,
-                    "language": t.language,
-                    "is_generated": t.is_generated,
-                    "is_translatable": t.is_translatable
-                })
-            
-            result = {
-                "video_id": video_id,
-                "available_transcripts": langs
-            }
-            cache.set(cache_key, result, expire=3600)  # Cache for 1 hour
+            langs = [{"language_code": t.language_code, "language": t.language,
+                       "is_generated": t.is_generated, "is_translatable": t.is_translatable}
+                     for t in transcript_list]
+            result = {"video_id": video_id, "available_transcripts": langs}
+            cache.set(cache_key, result, expire=3600)
             return JSONResponse(content=result)
-        
-        # Fetch transcript
+
         transcript = None
-        actual_language = None  # Track what language we actually got
-        
+        actual_language = None
+
         if translate:
-            # Find source transcript, then translate
             transcript_list = ytt_api.list(video_id)
+            available = list(transcript_list)
             if lang:
                 try:
                     source = transcript_list.find_transcript([lang])
-                    actual_language = source.language_code
                 except Exception:
-                    available = list(transcript_list)
                     source = available[0] if available else None
-                    if not source:
-                        raise HTTPException(status_code=404, detail="No transcripts available for this video")
-                    actual_language = source.language_code
             else:
-                available = list(transcript_list)
                 source = available[0] if available else None
-                if not source:
-                    raise HTTPException(status_code=404, detail="No transcripts available for this video")
-                actual_language = source.language_code
-            
+            if not source:
+                raise HTTPException(status_code=404, detail="No transcripts available")
+            actual_language = source.language_code
             transcript = source.translate(translate).fetch()
+        elif lang:
+            transcript = ytt_api.fetch(video_id, languages=[lang])
+            actual_language = lang
         else:
-            # Auto-detect: if no lang specified, get first available transcript
-            if lang:
-                transcript = ytt_api.fetch(video_id, languages=[lang])
-                actual_language = lang
-            else:
-                # Get whatever is available - try to list and pick the first one
-                try:
-                    transcript_list = ytt_api.list(video_id)
-                    available = list(transcript_list)
-                    if not available:
-                        raise HTTPException(status_code=404, detail="No transcripts available for this video")
-                    # Prefer manual transcripts over auto-generated
-                    manual = [t for t in available if not t.is_generated]
-                    source = manual[0] if manual else available[0]
-                    actual_language = source.language_code
-                    transcript = source.fetch()
-                except HTTPException:
-                    raise
-                except Exception:
-                    # Fallback to default fetch (will try common languages)
-                    transcript = ytt_api.fetch(video_id)
-                    actual_language = "auto"
-        
+            try:
+                transcript_list = ytt_api.list(video_id)
+                available = list(transcript_list)
+                if not available:
+                    raise HTTPException(status_code=404, detail="No transcripts available")
+                manual = [t for t in available if not t.is_generated]
+                source = manual[0] if manual else available[0]
+                actual_language = source.language_code
+                transcript = source.fetch()
+            except HTTPException:
+                raise
+            except Exception:
+                transcript = ytt_api.fetch(video_id)
+                actual_language = "auto"
+
         # Time slicing
         if start is not None or end is not None:
             raw_data = transcript.to_raw_data()
-            sliced = []
-            for entry in raw_data:
-                t = entry.get("start", 0.0)
-                if (start is None or t >= start) and (end is None or t <= end):
-                    sliced.append(entry)
-            transcript = sliced
-        
-        # Format output
+            transcript = [e for e in raw_data if (start is None or e.get("start", 0) >= start) and (end is None or e.get("start", 0) <= end)]
+
+        # Format
         fmt = format.lower()
-        if fmt == "text":
-            formatter = TextFormatter()
-            formatted_output = formatter.format_transcript(transcript)
-        elif fmt == "json":
-            formatter = JSONFormatter()
-            formatted_output = formatter.format_transcript(transcript, indent=2)
-        elif fmt == "srt":
-            formatter = SRTFormatter()
-            formatted_output = formatter.format_transcript(transcript)
+        formatters = {"text": TextFormatter(), "json": JSONFormatter(), "srt": SRTFormatter()}
+        if fmt == "json":
+            formatted_output = formatters[fmt].format_transcript(transcript, indent=2)
         else:
-            formatted_output = str(transcript)
-        
-        # Calculate stats
+            formatted_output = formatters[fmt].format_transcript(transcript)
+
         raw_data = transcript.to_raw_data() if hasattr(transcript, 'to_raw_data') else transcript
-        total_duration = 0
-        word_count = 0
-        for entry in raw_data:
-            total_duration = max(total_duration, entry.get("start", 0) + entry.get("duration", 0))
-            word_count += len(entry.get("text", "").split())
-        
+        total_duration = max((e.get("start", 0) + e.get("duration", 0) for e in raw_data), default=0)
+        word_count = sum(len(e.get("text", "").split()) for e in raw_data)
+
         result = {
             "success": True,
             "video_id": video_id,
@@ -3082,148 +1215,88 @@ async def youtube_transcript(
             "format": fmt,
             "language": actual_language or "auto",
             "translated_to": translate,
-            "time_range": {
-                "start": start,
-                "end": end
-            } if start or end else None,
-            "stats": {
-                "segment_count": len(raw_data),
-                "word_count": word_count,
-                "duration_seconds": round(total_duration, 2)
-            },
+            "time_range": {"start": start, "end": end} if start or end else None,
+            "stats": {"segment_count": len(raw_data), "word_count": word_count, "duration_seconds": round(total_duration, 2)},
             "transcript": formatted_output
         }
-        
-        cache.set(cache_key, result, expire=3600)  # Cache for 1 hour
+
+        cache.set(cache_key, result, expire=3600)
         return JSONResponse(content=result)
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        # youtube-transcript-api failed, try yt-dlp fallback
+        # Fallback to yt-dlp
         import logging
         logger = logging.getLogger(__name__)
-        logger.warning(f"youtube-transcript-api failed for {video_id}: {str(e)}")
+        logger.warning(f"youtube-transcript-api failed for {video_id}: {e}")
         try:
             ytdlp_result = await asyncio.get_event_loop().run_in_executor(
-                None, 
-                lambda: fetch_transcript_ytdlp(video_id, lang)
+                None, lambda: fetch_transcript_ytdlp(video_id, lang)
             )
-            
+
             if list_langs:
                 result = {
-                    "video_id": video_id,
+                    "video_id": video_id, "source": "yt-dlp",
                     "available_transcripts": [
-                        {
-                            "language_code": l["code"],
-                            "language": l["code"],
-                            "is_generated": l["is_generated"],
-                            "is_translatable": False
-                        } for l in ytdlp_result["available_langs"]
-                    ],
-                    "source": "yt-dlp"
+                        {"language_code": l["code"], "language": l["code"],
+                         "is_generated": l["is_generated"], "is_translatable": False}
+                        for l in ytdlp_result["available_langs"]
+                    ]
                 }
                 cache.set(cache_key, result, expire=3600)
                 return JSONResponse(content=result)
-            
+
             transcript = ytdlp_result["transcript"]
             actual_language = ytdlp_result["language"]
-            
-            # Time slicing
+
             if start is not None or end is not None:
-                sliced = []
-                for entry in transcript:
-                    t = entry.get("start", 0.0)
-                    if (start is None or t >= start) and (end is None or t <= end):
-                        sliced.append(entry)
-                transcript = sliced
-            
-            # Format output
+                transcript = [e for e in transcript if (start is None or e.get("start", 0) >= start) and (end is None or e.get("start", 0) <= end)]
+
             fmt = format.lower()
             if fmt == "text":
-                formatted_output = "\n".join(entry["text"] for entry in transcript)
+                formatted_output = "\n".join(e["text"] for e in transcript)
             elif fmt == "json":
-                import json
                 formatted_output = json.dumps(transcript, indent=2)
             elif fmt == "srt":
                 srt_lines = []
                 for i, entry in enumerate(transcript, 1):
-                    start_time = entry["start"]
-                    end_time = start_time + entry.get("duration", 0)
-                    def format_srt_time(seconds):
-                        h = int(seconds // 3600)
-                        m = int((seconds % 3600) // 60)
-                        s = int(seconds % 60)
-                        ms = int((seconds % 1) * 1000)
-                        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-                    srt_lines.append(f"{i}")
-                    srt_lines.append(f"{format_srt_time(start_time)} --> {format_srt_time(end_time)}")
-                    srt_lines.append(entry["text"])
-                    srt_lines.append("")
+                    s = entry["start"]
+                    e_time = s + entry.get("duration", 0)
+                    def fmt_srt(sec):
+                        h, m, sec2 = int(sec//3600), int((sec%3600)//60), sec%60
+                        return f"{h:02d}:{m:02d}:{int(sec2):02d},{int((sec2%1)*1000):03d}"
+                    srt_lines.extend([str(i), f"{fmt_srt(s)} --> {fmt_srt(e_time)}", entry["text"], ""])
                 formatted_output = "\n".join(srt_lines)
             else:
                 formatted_output = str(transcript)
-            
-            # Calculate stats
-            total_duration = 0
-            word_count = 0
-            for entry in transcript:
-                total_duration = max(total_duration, entry.get("start", 0) + entry.get("duration", 0))
-                word_count += len(entry.get("text", "").split())
-            
+
+            total_duration = max((e.get("start", 0) + e.get("duration", 0) for e in transcript), default=0)
+            word_count = sum(len(e.get("text", "").split()) for e in transcript)
+
             result = {
-                "success": True,
-                "video_id": video_id,
+                "success": True, "video_id": video_id,
                 "video_url": f"https://www.youtube.com/watch?v={video_id}",
-                "format": fmt,
-                "language": actual_language,
-                "translated_to": None,  # yt-dlp doesn't support translation
-                "time_range": {
-                    "start": start,
-                    "end": end
-                } if start or end else None,
-                "stats": {
-                    "segment_count": len(transcript),
-                    "word_count": word_count,
-                    "duration_seconds": round(total_duration, 2)
-                },
-                "transcript": formatted_output,
-                "source": "yt-dlp"  # Indicate fallback was used
+                "format": fmt, "language": actual_language, "translated_to": None,
+                "time_range": {"start": start, "end": end} if start or end else None,
+                "stats": {"segment_count": len(transcript), "word_count": word_count, "duration_seconds": round(total_duration, 2)},
+                "transcript": formatted_output, "source": "yt-dlp"
             }
-            
             cache.set(cache_key, result, expire=3600)
             return JSONResponse(content=result)
-            
+
         except Exception as ytdlp_error:
-            # Both methods failed - log the yt-dlp error too
-            logger.warning(f"yt-dlp fallback also failed for {video_id}: {str(ytdlp_error)}")
-            
-            err_str = str(e).lower()
-            ytdlp_err_str = str(ytdlp_error).lower()
-            
-            if "no transcript" in err_str or "could not retrieve" in err_str or "no subtitles" in ytdlp_err_str:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"No transcript found for this video. Primary error: {str(e)[:200]}. Fallback error: {str(ytdlp_error)[:200]}"
-                )
-            if "disabled" in err_str:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Transcripts are disabled for this video."
-                )
-            if "unavailable" in err_str or "video is unavailable" in err_str:
-                raise HTTPException(
-                    status_code=404,
-                    detail="Video unavailable or does not exist."
-                )
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to fetch transcript. Primary: {str(e)[:300]}. Fallback: {str(ytdlp_error)[:300]}"
-            )
+            err = str(e).lower()
+            if "no transcript" in err or "could not retrieve" in err:
+                raise HTTPException(status_code=404, detail=f"No transcript found. Primary: {str(e)[:200]}. Fallback: {str(ytdlp_error)[:200]}")
+            if "disabled" in err:
+                raise HTTPException(status_code=403, detail="Transcripts are disabled for this video.")
+            if "unavailable" in err:
+                raise HTTPException(status_code=404, detail="Video unavailable.")
+            raise HTTPException(status_code=500, detail=f"Failed: {str(e)[:300]}. Fallback: {str(ytdlp_error)[:300]}")
 
 
 if __name__ == "__main__":
     import uvicorn
-    import os
     port = int(os.getenv("PORT", 8001))
     uvicorn.run(app, host="0.0.0.0", port=port)
