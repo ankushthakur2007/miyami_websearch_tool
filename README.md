@@ -2,7 +2,7 @@
 
 A FastAPI wrapper for SearXNG that provides LLM-friendly search and web content extraction capabilities.
 
-**🔗 Live API:** `https://websearch.miyami.tech`
+
 
 ## 🚀 Features
 
