@@ -2,7 +2,7 @@
 
 A FastAPI wrapper for SearXNG that provides LLM-friendly search and web content extraction capabilities.
 
-**🔗 Live API:** `https://websearch.miyami.tech`
+**🔗 Live API:** `http://localhost:8001`
 
 ## 🚀 Features
 
@@ -37,13 +37,13 @@ Search the web using multiple engines and get structured results.
 **Examples:**
 ```bash
 # Basic search
-curl "https://websearch.miyami.tech/search-api?query=weather&categories=general"
+curl "http://localhost:8001/search-api?query=weather&categories=general"
 
 # Recent news (past 24 hours)
-curl "https://websearch.miyami.tech/search-api?query=AI+news&time_range=day"
+curl "http://localhost:8001/search-api?query=AI+news&time_range=day"
 
 # With AI reranking
-curl "https://websearch.miyami.tech/search-api?query=python+tutorials&rerank=true"
+curl "http://localhost:8001/search-api?query=python+tutorials&rerank=true"
 ```
 
 **Response:**
@@ -54,7 +54,7 @@ curl "https://websearch.miyami.tech/search-api?query=python+tutorials&rerank=tru
   "results": [
     {
       "title": "Weather.com",
-      "url": "https://weather.com",
+      "url": "http://127.0.0.1:8888",
       "content": "Get the latest weather...",
       "engine": "brave",
       "score": 1.5
@@ -92,20 +92,20 @@ Extract clean, readable content from any webpage with **Firecrawl-like quality**
 **Examples:**
 ```bash
 # Basic fetch with markdown output
-curl "https://websearch.miyami.tech/fetch?url=https://example.com&format=markdown"
+curl "http://localhost:8001/fetch?url=http://127.0.0.1:8888&format=markdown"
 
 # Fetch a PDF document (auto-detected)
-curl "https://websearch.miyami.tech/fetch?url=https://example.com/report.pdf&format=markdown"
+curl "http://localhost:8001/fetch?url=http://127.0.0.1:8001/sample.pdf&format=markdown"
 
 # With stealth mode for protected sites
-curl "https://websearch.miyami.tech/fetch?url=https://protected-site.com&stealth_mode=high&auto_bypass=true"
+curl "http://localhost:8001/fetch?url=http://127.0.0.1:8888&stealth_mode=high&auto_bypass=true"
 ```
 
 **Response (Webpage):**
 ```json
 {
   "success": true,
-  "url": "https://example.com",
+  "url": "http://127.0.0.1:8888",
   "status_code": 200,
   "fetch_method": "stealth_medium",
   "metadata": {
@@ -128,7 +128,7 @@ curl "https://websearch.miyami.tech/fetch?url=https://protected-site.com&stealth
 ```json
 {
   "success": true,
-  "url": "https://example.com/report.pdf",
+  "url": "http://127.0.0.1:8001/sample.pdf",
   "is_document": true,
   "document_type": "pdf",
   "content": "Extracted text from PDF...",
@@ -159,13 +159,13 @@ curl "https://websearch.miyami.tech/fetch?url=https://protected-site.com&stealth
 **Examples:**
 ```bash
 # Search and fetch top 3 results
-curl "https://websearch.miyami.tech/search-and-fetch?query=python+tutorials&num_results=3&format=markdown"
+curl "http://localhost:8001/search-and-fetch?query=python+tutorials&num_results=3&format=markdown"
 
 # Recent AI news with full content
-curl "https://websearch.miyami.tech/search-and-fetch?query=AI+news&time_range=day&num_results=5"
+curl "http://localhost:8001/search-and-fetch?query=AI+news&time_range=day&num_results=5"
 
 # With stealth mode
-curl "https://websearch.miyami.tech/search-and-fetch?query=web+scraping&stealth_mode=high&auto_bypass=true"
+curl "http://localhost:8001/search-and-fetch?query=web+scraping&stealth_mode=high&auto_bypass=true"
 ```
 
 **Response:**
@@ -184,7 +184,7 @@ curl "https://websearch.miyami.tech/search-and-fetch?query=web+scraping&stealth_
     {
       "search_result": {
         "title": "Python Tutorial",
-        "url": "https://example.com",
+        "url": "http://127.0.0.1:8888",
         "snippet": "Learn Python..."
       },
       "fetch_status": "success",
@@ -215,10 +215,10 @@ Perform comprehensive research across multiple queries in parallel.
 **Examples:**
 ```bash
 # Research multiple topics
-curl "https://websearch.miyami.tech/deep-research?queries=AI+trends,machine+learning,GPT&breadth=2"
+curl "http://localhost:8001/deep-research?queries=AI+trends,machine+learning,GPT&breadth=2"
 
 # With time filter
-curl "https://websearch.miyami.tech/deep-research?queries=python+news,javascript+updates&time_range=month"
+curl "http://localhost:8001/deep-research?queries=python+news,javascript+updates&time_range=month"
 ```
 
 **Response:**
@@ -266,23 +266,23 @@ Recursively crawl an entire website and extract content from multiple pages usin
 **Examples:**
 ```bash
 # Basic site crawl
-curl "https://websearch.miyami.tech/crawl-site?start_url=https://example.com&max_pages=10"
+curl "http://localhost:8001/crawl-site?start_url=http://127.0.0.1:8888&max_pages=10"
 
 # Crawl with depth limit and URL filtering
-curl "https://websearch.miyami.tech/crawl-site?start_url=https://docs.example.com&max_depth=3&url_patterns=/api/,/guides/"
+curl "http://localhost:8001/crawl-site?start_url=http://127.0.0.1:8888&max_depth=3&url_patterns=/search,/preferences"
 
 # Bypass robots.txt for protected sites
-curl "https://websearch.miyami.tech/crawl-site?start_url=https://site.com&max_pages=5&obey_robots=false"
+curl "http://localhost:8001/crawl-site?start_url=http://127.0.0.1:8888&max_pages=5&obey_robots=false"
 
 # Crawl specific sections only
-curl "https://websearch.miyami.tech/crawl-site?start_url=https://blog.example.com&url_patterns=/2024/,/tech/&exclude_patterns=/archive/"
+curl "http://localhost:8001/crawl-site?start_url=http://127.0.0.1:8888&url_patterns=/search,/info&exclude_patterns=/static/"
 ```
 
 **Response:**
 ```json
 {
   "crawl_summary": {
-    "start_url": "https://example.com",
+    "start_url": "http://127.0.0.1:8888",
     "pages_crawled": 10,
     "max_pages_requested": 10,
     "max_depth": 2,
@@ -291,7 +291,7 @@ curl "https://websearch.miyami.tech/crawl-site?start_url=https://blog.example.co
   },
   "pages": [
     {
-      "url": "https://example.com/page1",
+      "url": "http://127.0.0.1:8888/search",
       "status_code": 200,
       "depth": 0,
       "metadata": {
@@ -303,8 +303,8 @@ curl "https://websearch.miyami.tech/crawl-site?start_url=https://blog.example.co
       "content": "# Page Title\n\nClean markdown content...",
       "word_count": 890,
       "format": "markdown",
-      "links": ["https://example.com/page2"],
-      "images": ["https://example.com/image.jpg"]
+      "links": ["http://127.0.0.1:8888/preferences"],
+      "images": ["http://127.0.0.1:8888/static/img/searxng.png"]
     }
   ],
   "total_words": 8900
@@ -349,28 +349,28 @@ Fetch YouTube video transcripts for LLM consumption.
 **Examples:**
 ```bash
 # Basic transcript (text format)
-curl "https://websearch.miyami.tech/yt-transcript?video=dQw4w9WgXcQ&format=text"
+curl "http://localhost:8001/yt-transcript?video=dQw4w9WgXcQ&format=text"
 
 # With full YouTube URL
-curl "https://websearch.miyami.tech/yt-transcript?video=https://youtube.com/watch?v=dQw4w9WgXcQ"
+curl "http://localhost:8001/yt-transcript?video=dQw4w9WgXcQ"
 
 # JSON format with timestamps
-curl "https://websearch.miyami.tech/yt-transcript?video=dQw4w9WgXcQ&format=json"
+curl "http://localhost:8001/yt-transcript?video=dQw4w9WgXcQ&format=json"
 
 # SRT subtitle format
-curl "https://websearch.miyami.tech/yt-transcript?video=dQw4w9WgXcQ&format=srt"
+curl "http://localhost:8001/yt-transcript?video=dQw4w9WgXcQ&format=srt"
 
 # Specific language
-curl "https://websearch.miyami.tech/yt-transcript?video=dQw4w9WgXcQ&lang=en"
+curl "http://localhost:8001/yt-transcript?video=dQw4w9WgXcQ&lang=en"
 
 # Translate to Spanish
-curl "https://websearch.miyami.tech/yt-transcript?video=dQw4w9WgXcQ&translate=es"
+curl "http://localhost:8001/yt-transcript?video=dQw4w9WgXcQ&translate=es"
 
 # Time range (60-120 seconds)
-curl "https://websearch.miyami.tech/yt-transcript?video=dQw4w9WgXcQ&start=60&end=120"
+curl "http://localhost:8001/yt-transcript?video=dQw4w9WgXcQ&start=60&end=120"
 
 # List available languages
-curl "https://websearch.miyami.tech/yt-transcript?video=dQw4w9WgXcQ&list_langs=true"
+curl "http://localhost:8001/yt-transcript?video=dQw4w9WgXcQ&list_langs=true"
 ```
 
 **Response:**
@@ -378,7 +378,7 @@ curl "https://websearch.miyami.tech/yt-transcript?video=dQw4w9WgXcQ&list_langs=t
 {
   "success": true,
   "video_id": "dQw4w9WgXcQ",
-  "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "video_url": "dQw4w9WgXcQ",
   "format": "text",
   "language": "auto",
   "translated_to": null,
@@ -404,12 +404,12 @@ curl "https://websearch.miyami.tech/yt-transcript?video=dQw4w9WgXcQ&list_langs=t
 ### 7. `/health` - Health Check
 
 ```bash
-curl "https://websearch.miyami.tech/health"
+curl "http://localhost:8001/health"
 ```
 
 ### 8. `/docs` - Interactive API Documentation
 
-Visit `https://websearch.miyami.tech/docs` for Swagger UI
+Visit `http://localhost:8001/docs` for Swagger UI
 
 ---
 
@@ -472,7 +472,7 @@ pip install scrapy>=2.11.0 itemadapter>=0.8.0
 ```python
 import httpx
 
-BASE_URL = "https://websearch.miyami.tech"
+BASE_URL = "http://localhost:8001"
 
 async def search(query: str, time_range: str = None):
     """Search the web"""

@@ -57,7 +57,7 @@ curl "http://localhost:8000/search-api?query=weather&categories=general"
   "results": [
     {
       "title": "Weather.com",
-      "url": "https://weather.com",
+      "url": "http://127.0.0.1:8888",
       "content": "Get the latest weather...",
       "engine": "google",
       "score": 1.5
@@ -80,7 +80,7 @@ Fetch and clean webpage content, extracting main text, links, headings, and imag
 
 **Example:**
 ```bash
-curl "http://localhost:8000/fetch?url=https://example.com"
+curl "http://localhost:8000/fetch?url=http://127.0.0.1:8888"
 ```
 
 **Response:**
@@ -88,20 +88,20 @@ curl "http://localhost:8000/fetch?url=https://example.com"
 {
   "metadata": {
     "title": "Example Domain",
-    "url": "https://example.com",
+    "url": "http://127.0.0.1:8888",
     "status_code": 200,
     "description": "Example website"
   },
   "content": "Clean extracted text content...",
   "short_title": "Example",
   "links": [
-    {"text": "More information", "url": "https://example.com/more"}
+    {"text": "Preferences", "url": "http://127.0.0.1:8888/preferences"}
   ],
   "headings": [
     {"level": "h1", "text": "Example Domain"}
   ],
   "images": [
-    {"url": "https://example.com/image.png", "alt": "Example"}
+    {"url": "http://127.0.0.1:8888/static/img/searxng.png", "alt": "SearXNG"}
   ]
 }
 ```

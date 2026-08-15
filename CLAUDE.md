@@ -60,7 +60,7 @@ The `/fetch` endpoint automatically detects and extracts text from document file
 ```json
 {
   "success": true,
-  "url": "https://example.com/file.pdf",
+  "url": "http://127.0.0.1:8001/sample.pdf",
   "is_document": true,
   "document_type": "pdf",
   "content": "Extracted text content...",
