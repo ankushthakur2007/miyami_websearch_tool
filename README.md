@@ -2,7 +2,11 @@
 
 A FastAPI wrapper for SearXNG that provides LLM-friendly search and web content extraction capabilities.
 
+<<<<<<< HEAD
 **🔗 Live API:** `http://localhost:8001`
+=======
+
+>>>>>>> d26c2677e959f199d0eb8ff079b5a4111563acd1
 
 ## 🚀 Features
 
