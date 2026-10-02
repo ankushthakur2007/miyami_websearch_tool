@@ -62,10 +62,12 @@ fi
 
 # Start FastAPI on the PORT provided by Render
 cd /app/search_api
-# Content extraction is CPU-bound (trafilatura/lxml hold the GIL), so extra throughput
-# has to come from separate processes, not from coroutines. Measured on the real corpus:
-# extraction only reaches 3.22x from 8 processes, so keep this modest.
-# Set WORKERS explicitly on small instances (Render free is 512MB/0.5 CPU).
-WORKERS=${WORKERS:-$(nproc 2>/dev/null || echo 4)}
+# Content extraction is CPU-bound (trafilatura/lxml hold the GIL), so throughput comes
+# from separate processes rather than coroutines. Capped at 4: on a 39-page real-world
+# corpus, extraction only reached 3.22x from 8 processes (memory-bandwidth bound), so
+# spawning one worker per core just wastes RAM. Set WORKERS to override.
+CPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+[ "$CPU" -gt 4 ] && CPU=4
+WORKERS=${WORKERS:-$CPU}
 echo "Starting FastAPI on 0.0.0.0:${PORT:-8080} with ${WORKERS} worker(s)..."
 exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080} --workers "$WORKERS"
