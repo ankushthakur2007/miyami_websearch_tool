@@ -22,6 +22,10 @@ services:
         value: 8888
       - key: PORT
         value: 10000
+      # Free tier is 512MB / 0.5 CPU. trafilatura+lxml+scrapy per worker is heavy, and
+      # 0.5 CPU cannot keep more than one busy. Do not raise without raising the plan.
+      - key: WORKERS
+        value: "1"
       - key: SEARXNG_LIMITER
         value: "false"
       - key: SEARXNG_SECRET
